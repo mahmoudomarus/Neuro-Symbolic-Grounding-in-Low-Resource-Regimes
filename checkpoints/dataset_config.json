@@ -1,0 +1,8 @@
+{
+  "input_channels": 3,
+  "num_classes": 2,
+  "class_names": [
+    "class_A",
+    "class_B"
+  ]
+}
