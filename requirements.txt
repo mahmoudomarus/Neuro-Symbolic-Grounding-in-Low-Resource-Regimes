@@ -38,3 +38,6 @@ pytest>=7.0.0
 
 # Utilities
 tqdm>=4.60.0
+
+# LLM Integration (optional)
+openai>=1.0.0
