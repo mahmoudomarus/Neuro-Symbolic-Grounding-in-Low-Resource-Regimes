@@ -4,11 +4,38 @@
 
 The Neuro-Symbolic Cognitive Architecture (NSCA) is grounded in research from cognitive science, developmental psychology, and neuroscience. This document explains the scientific basis for each architectural decision.
 
+**v2.0 Theoretical Update**: Following peer review, our theoretical position has evolved from "innate priors as fixed rules" to "**adaptive priors as learnable biases**". The key framing:
+
+> "Modern deep learning asks: 'How much data do we need to learn everything from scratch?'
+> NSCA asks: 'What minimal structural biases enable learning from limited interaction?'"
+
+This is not a debate between nativism and empiricism, but a recognition that **priors serve as initialization that can be overridden**—analogous to how infants have innate expectations about gravity that can be modified through experience (helium balloons).
+
 ---
 
-## 1. Innate Priors: The Nativist Foundation
+## 1. Adaptive Priors: Beyond Nativism vs. Empiricism
 
-### Scientific Basis
+### The v2.0 Position
+
+**Not**: "Gravity is hard-coded as -9.8 m/s²"
+**But**: "Gravity prior provides strong initial bias (0.9 weight), with learnable correction for exceptions"
+
+```python
+output = prior_weight × prior + (1 - prior_weight) × correction
+# prior_weight starts at 0.9, can drop to 0.3 (critical period floor)
+# Never completely forgets physics, but can learn exceptions
+```
+
+### Scientific Basis: Bayesian Brain Hypothesis
+
+This architecture is consistent with the **Bayesian brain hypothesis** (Friston, 2010):
+- Priors = strong initial beliefs
+- Likelihood = sensory evidence
+- Posterior = updated beliefs
+
+The critical period floor (0.3) corresponds to the observation that early-acquired knowledge structures are difficult but not impossible to modify.
+
+### Original Scientific Basis
 
 Contrary to the empiricist "blank slate" view, developmental research demonstrates that humans possess **innate perceptual and cognitive structures**:
 

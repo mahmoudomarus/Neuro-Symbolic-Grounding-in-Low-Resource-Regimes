@@ -211,7 +211,14 @@ class TestIntuitivePhysics:
         physics = IntuitivePhysics(feature_dim=64)
         
         object_state = torch.randn(2, 64)
-        is_supported, expected_motion = physics.gravity(object_state)
+        
+        # New adaptive physics returns 3 values: is_supported, motion, diagnostics
+        if physics.use_adaptive_priors:
+            is_supported, expected_motion, diagnostics = physics.gravity(object_state)
+            # Check critical period floor is respected
+            assert diagnostics['prior_weight'].item() >= 0.3
+        else:
+            is_supported, expected_motion = physics.gravity(object_state)
         
         assert is_supported.shape == (2,)
         assert expected_motion.shape == (2, 3)
@@ -347,18 +354,29 @@ class TestLanguageGrounding:
         assert 'hard' in descriptions[0].lower()
     
     def test_text_grounder(self):
-        from src.language.llm_integration import TextGrounder
+        from src.language.llm_integration import LearnedGrounding
         
-        grounder = TextGrounder()
+        grounder = LearnedGrounding()
         
-        # Known concept
-        rock_props = grounder('rock')
-        assert rock_props.shape == (9,)
-        assert rock_props[0] > 0.7  # Hardness should be high for rock
+        # New: LearnedGrounding starts EMPTY (no hard-coded concepts)
+        # This is a key architectural change from the peer review
+        assert len(grounder.get_grounded_concepts()) == 0
         
-        # Unknown concept
+        # Unknown concept should return neutral values (learned predictor)
         unknown_props = grounder('qwertyuiop')
-        assert (unknown_props == 0.5).all()
+        assert unknown_props.shape == (9,)
+        
+        # Test learning from interaction
+        grounder.learn_from_interaction(
+            object_id='rock_001',
+            action='strike',
+            sensory_feedback={'audio_frequency': 0.9}
+        )
+        
+        # Now 'rock_001' should be grounded
+        assert 'rock_001' in grounder.get_grounded_concepts()
+        rock_props = grounder('rock_001')
+        assert rock_props[0] > 0.5  # Hardness should be elevated after interaction
     
     def test_language_grounding(self):
         from src.language.llm_integration import LanguageGrounding, LanguageConfig

@@ -13,8 +13,9 @@ that we query, not as the source of understanding.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import json
+import copy
 
 import torch
 import torch.nn as nn
@@ -133,58 +134,180 @@ class ConceptVerbalizer(nn.Module):
             return f"moderately {low_adj}/{high_adj}"
 
 
-class TextGrounder(nn.Module):
+class LearnedGrounding(nn.Module):
     """
-    Ground language descriptions in perceptual properties.
+    Grounding table populated through interaction, not manual entry.
     
-    Takes text like "rock" and produces expected property values:
-    - "rock" → hard=0.9, heavy=0.7, small=0.3, animate=0.0
+    CRITICAL DESIGN DECISION: No hard-coded concept groundings.
+    All groundings are learned through the babbling phase.
     
-    Uses learned word → property mappings.
+    Protocol:
+    1. Initialize EMPTY
+    2. "Babbling phase": Agent interacts with objects in simulator
+    3. Each interaction updates grounding:
+       - strike object -> measure audio frequency -> infer hardness
+       - lift object -> measure force/acceleration -> infer weight
+       - etc.
+    
+    Evaluation should report "zero-shot after babbling" not "zero-shot".
+    
+    References:
+    - O'Regan & Noë (2001). Sensorimotor theory of perceptual experience.
+    - Smith & Gasser (2005). Development of embodied cognition.
     """
     
-    # Pre-defined groundings for common concepts
-    CONCEPT_GROUNDINGS = {
-        "rock": [0.9, 0.7, 0.3, 0.0, 0.9, 0.0, 0.7, 0.5, 0.0],
-        "water": [0.0, 0.3, 0.5, 0.0, 0.0, 0.8, 0.0, 0.4, 0.0],
-        "animal": [0.5, 0.5, 0.5, 1.0, 0.3, 0.0, 0.5, 0.6, 0.0],
-        "ball": [0.5, 0.3, 0.3, 0.0, 0.8, 0.0, 0.2, 0.5, 0.0],
-        "glass": [0.9, 0.3, 0.4, 0.0, 0.9, 0.9, 0.0, 0.5, 1.0],
-        "cloth": [0.1, 0.1, 0.5, 0.0, 0.0, 0.0, 0.7, 0.5, 0.0],
-        "metal": [1.0, 0.9, 0.5, 0.0, 1.0, 0.0, 0.3, 0.5, 0.0],
-        "wood": [0.8, 0.6, 0.5, 0.0, 0.8, 0.0, 0.6, 0.5, 0.0],
-        "person": [0.6, 0.6, 0.7, 1.0, 0.3, 0.0, 0.5, 0.6, 0.0],
-        "cat": [0.4, 0.3, 0.3, 1.0, 0.2, 0.0, 0.4, 0.6, 0.0],
-        "dog": [0.5, 0.5, 0.5, 1.0, 0.2, 0.0, 0.5, 0.6, 0.0],
-        "chair": [0.7, 0.6, 0.6, 0.0, 0.8, 0.0, 0.5, 0.5, 0.0],
-        "table": [0.8, 0.7, 0.7, 0.0, 0.9, 0.0, 0.4, 0.5, 0.0],
-        "cup": [0.6, 0.2, 0.2, 0.0, 0.8, 0.3, 0.3, 0.5, 1.0],
+    # Property names for grounding
+    PROPERTY_NAMES = [
+        "hardness", "weight", "size", "animacy", "rigidity",
+        "transparency", "roughness", "temperature", "containment"
+    ]
+    
+    # Action -> Property mappings (which actions inform which properties)
+    ACTION_PROPERTY_MAP = {
+        'strike': ['hardness'],           # Audio frequency -> hardness
+        'lift': ['weight'],               # Force/acceleration -> weight
+        'push': ['weight'],               # Resistance -> weight
+        'squeeze': ['hardness', 'rigidity'],  # Deformation -> hardness/rigidity
+        'look': ['size', 'transparency'], # Visual -> size/transparency
+        'drop': ['hardness', 'weight'],   # Impact sound -> hardness/weight
     }
     
     def __init__(self, property_dim: int = 9, hidden_dim: int = 256) -> None:
         super().__init__()
         
         self.property_dim = property_dim
+        self.hidden_dim = hidden_dim
         
-        # Convert pre-defined groundings to buffer
-        concept_names = list(self.CONCEPT_GROUNDINGS.keys())
-        concept_vectors = torch.tensor([
-            self.CONCEPT_GROUNDINGS[name] for name in concept_names
-        ])
-        self.register_buffer('known_concepts', concept_vectors)
-        self.concept_names = concept_names
+        # EMPTY grounding table - populated through interaction
+        self.grounding_table: Dict[str, torch.Tensor] = {}
         
-        # For unknown words, predict from word embedding (simplified)
-        self.unknown_predictor = nn.Sequential(
+        # Confidence scores for each grounding (how many interactions)
+        self.grounding_confidence: Dict[str, float] = {}
+        
+        # Learnable word embeddings for generalization
+        self.word_embedding = nn.Embedding(1000, hidden_dim)  # Vocabulary size
+        self.word_to_idx: Dict[str, int] = {}
+        self.next_word_idx = 0
+        
+        # Property predictor for unseen words (learns from grounded words)
+        self.property_predictor = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, property_dim),
             nn.Sigmoid(),
         )
+        
+        # Property encoders from sensory feedback
+        self.hardness_from_audio = nn.Sequential(
+            nn.Linear(2, 32),  # audio_frequency, audio_intensity
+            nn.GELU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+        
+        self.weight_from_force = nn.Sequential(
+            nn.Linear(2, 32),  # force_required, acceleration
+            nn.GELU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+    
+    def learn_from_interaction(
+        self,
+        object_id: str,
+        action: str,
+        sensory_feedback: Dict[str, Any],
+    ) -> Dict[str, float]:
+        """
+        Update grounding based on actual interaction.
+        
+        This is how the agent builds its concept dictionary through
+        sensorimotor contingencies, not supervision.
+        
+        Args:
+            object_id: Identifier for the object (e.g., "rock_001")
+            action: Action performed (e.g., "strike", "lift")
+            sensory_feedback: Dict of sensory values from interaction
+            
+        Returns:
+            Dict of inferred properties from this interaction
+        """
+        inferred = {}
+        
+        # Initialize if first interaction with this object
+        if object_id not in self.grounding_table:
+            self.grounding_table[object_id] = torch.full((self.property_dim,), 0.5)
+            self.grounding_confidence[object_id] = 0.0
+        
+        # Infer properties based on action type
+        if action == 'strike':
+            if 'audio_frequency' in sensory_feedback:
+                # High frequency = hard
+                hardness = sensory_feedback['audio_frequency']
+                inferred['hardness'] = hardness
+                self._update_property(object_id, 0, hardness)
+                
+        elif action in ('lift', 'push'):
+            if 'force_required' in sensory_feedback:
+                weight = sensory_feedback['force_required']
+                inferred['weight'] = weight
+                self._update_property(object_id, 1, weight)
+            elif 'resistance' in sensory_feedback:
+                weight = sensory_feedback['resistance']
+                inferred['weight'] = weight
+                self._update_property(object_id, 1, weight)
+                
+        elif action == 'squeeze':
+            if 'deformation' in sensory_feedback:
+                # High deformation = soft (low hardness)
+                hardness = 1.0 - sensory_feedback['deformation']
+                inferred['hardness'] = hardness
+                self._update_property(object_id, 0, hardness)
+            if 'resistance' in sensory_feedback:
+                rigidity = sensory_feedback['resistance']
+                inferred['rigidity'] = rigidity
+                self._update_property(object_id, 4, rigidity)
+                
+        elif action == 'drop':
+            if 'impact_sound' in sensory_feedback:
+                # Loud impact = hard and/or heavy
+                impact = sensory_feedback['impact_sound']
+                inferred['hardness'] = impact
+                self._update_property(object_id, 0, impact)
+        
+        # Update confidence
+        self.grounding_confidence[object_id] += 0.1
+        self.grounding_confidence[object_id] = min(1.0, self.grounding_confidence[object_id])
+        
+        return inferred
+    
+    def _update_property(
+        self,
+        object_id: str,
+        property_idx: int,
+        value: float,
+        learning_rate: float = 0.3,
+    ) -> None:
+        """Update a specific property with exponential moving average."""
+        current = self.grounding_table[object_id][property_idx].item()
+        new_value = (1 - learning_rate) * current + learning_rate * value
+        self.grounding_table[object_id][property_idx] = new_value
+    
+    def _get_word_idx(self, word: str) -> int:
+        """Get or create word index."""
+        word_lower = word.lower().strip()
+        if word_lower not in self.word_to_idx:
+            self.word_to_idx[word_lower] = self.next_word_idx
+            self.next_word_idx += 1
+        return self.word_to_idx[word_lower]
     
     def forward(self, word: str) -> torch.Tensor:
         """
         Ground a word in perceptual properties.
+        
+        If the word has been grounded through interaction, return that.
+        Otherwise, use the learned predictor to estimate.
         
         Args:
             word: The word to ground
@@ -194,13 +317,23 @@ class TextGrounder(nn.Module):
         """
         word_lower = word.lower().strip()
         
-        # Check known concepts
-        if word_lower in self.concept_names:
-            idx = self.concept_names.index(word_lower)
-            return self.known_concepts[idx]
+        # Check if we have grounded this concept through interaction
+        if word_lower in self.grounding_table:
+            return self.grounding_table[word_lower]
         
-        # Unknown word - return neutral properties
-        return torch.full((self.property_dim,), 0.5)
+        # Check if any object_id contains this word (partial match)
+        for obj_id, props in self.grounding_table.items():
+            if word_lower in obj_id.lower():
+                return props
+        
+        # Unknown word - use learned predictor
+        word_idx = self._get_word_idx(word_lower)
+        word_idx = min(word_idx, 999)  # Clamp to vocab size
+        
+        embedding = self.word_embedding(torch.tensor([word_idx]))
+        predicted = self.property_predictor(embedding)
+        
+        return predicted.squeeze(0)
     
     def ground_phrase(self, phrase: str) -> torch.Tensor:
         """Ground a phrase (multiple words)."""
@@ -209,17 +342,40 @@ class TextGrounder(nn.Module):
         if not words:
             return torch.full((self.property_dim,), 0.5)
         
-        # Average properties of known words
-        known_props = []
-        for word in words:
-            if word in self.concept_names:
-                idx = self.concept_names.index(word)
-                known_props.append(self.known_concepts[idx])
+        # Average properties of all words
+        word_props = [self.forward(word) for word in words]
         
-        if known_props:
-            return torch.stack(known_props).mean(dim=0)
+        if word_props:
+            return torch.stack(word_props).mean(dim=0)
         
         return torch.full((self.property_dim,), 0.5)
+    
+    def get_grounded_concepts(self) -> List[str]:
+        """Return list of concepts that have been grounded through interaction."""
+        return list(self.grounding_table.keys())
+    
+    def get_grounding_statistics(self) -> Dict[str, Any]:
+        """Get statistics about current grounding state."""
+        return {
+            'num_grounded': len(self.grounding_table),
+            'concepts': list(self.grounding_table.keys()),
+            'confidences': dict(self.grounding_confidence),
+            'avg_confidence': (
+                sum(self.grounding_confidence.values()) / len(self.grounding_confidence)
+                if self.grounding_confidence else 0.0
+            ),
+        }
+    
+    def export_grounding_table(self) -> Dict[str, List[float]]:
+        """Export grounding table for inspection/verification."""
+        return {
+            obj_id: props.tolist()
+            for obj_id, props in self.grounding_table.items()
+        }
+
+
+# Backward compatibility alias
+TextGrounder = LearnedGrounding
 
 
 class LLMInterface:
@@ -299,8 +455,8 @@ class LanguageGrounding(nn.Module):
         # Concept → Language
         self.verbalizer = ConceptVerbalizer(config.property_dim)
         
-        # Language → Concept
-        self.grounder = TextGrounder(config.property_dim, config.hidden_dim)
+        # Language → Concept (learned through interaction, not hard-coded)
+        self.grounder = LearnedGrounding(config.property_dim, config.hidden_dim)
         
         # LLM interface (optional)
         if config.use_external_llm:
@@ -366,13 +522,22 @@ class LanguageGrounding(nn.Module):
         """
         Find the best matching word for a property vector.
         
+        Searches through concepts grounded via babbling interaction.
+        
         Returns:
             (best_word, similarity_score)
         """
         best_word = None
         best_score = 0.0
         
-        for word in self.grounder.concept_names:
+        # Get concepts that have been grounded through interaction
+        grounded_concepts = self.grounder.get_grounded_concepts()
+        
+        if not grounded_concepts:
+            # No concepts grounded yet - return unknown
+            return "unknown", 0.0
+        
+        for word in grounded_concepts:
             matches, score = self.concept_matches_word(property_vector, word)
             if score > best_score:
                 best_score = score

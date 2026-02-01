@@ -8,6 +8,10 @@ Provides intrinsic motivation for learning:
 
 Key insight: Babies learn because they NEED things.
 Without drives, there's no reason to learn anything.
+
+ARCHITECTURAL UPDATE (Peer Review):
+Now includes RobustCuriosityReward with "noisy TV" defense
+to prevent reward hacking from random noise.
 """
 
 from .drive_system import (
@@ -18,7 +22,10 @@ from .drive_system import (
 from .intrinsic_reward import (
     IntrinsicRewardComputer,
     CuriosityReward,
+    RobustCuriosityReward,
     CompetenceReward,
+    InformationGainReward,
+    RewardComponents,
 )
 from .attention import AttentionAllocator
 
@@ -28,6 +35,9 @@ __all__ = [
     "DriveState",
     "IntrinsicRewardComputer",
     "CuriosityReward",
+    "RobustCuriosityReward",
     "CompetenceReward",
+    "InformationGainReward",
+    "RewardComponents",
     "AttentionAllocator",
 ]

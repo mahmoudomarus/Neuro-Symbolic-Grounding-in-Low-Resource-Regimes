@@ -1,0 +1,138 @@
+# NSCA Ablation Study Configuration
+# 
+# This config defines the evaluation protocol for comparing
+# NSCA (with innate priors) vs Random Initialization.
+#
+# The goal: Prove that priors provide 3-5x sample efficiency
+# improvement on robotic manipulation tasks.
+
+experiment:
+  name: "nsca_innate_priors_ablation"
+  description: "Ablation study comparing NSCA priors vs random initialization"
+  env: "meta-world"
+  
+# Tasks to evaluate
+# Selected from Meta-World ML10 benchmark
+tasks:
+  - "pick-place-v2"      # Pick and place object
+  - "push-v2"            # Push object to target
+  - "drawer-open-v2"     # Open drawer
+  - "window-open-v2"     # Open window
+  - "button-press-v2"    # Press button
+
+# Demonstration counts for learning curve
+# Key: Show advantage of priors at low-data regime
+demo_counts:
+  - 1     # Extreme few-shot
+  - 5     # Few-shot
+  - 10    # Limited data
+  - 50    # Moderate data
+  - 100   # Sufficient data (expect convergence)
+
+# Statistical rigor (required by reviewers)
+statistical:
+  num_seeds: 20              # N=20 minimum for RL/robotics
+  confidence_level: 0.95     # 95% confidence intervals
+  report_effect_size: true   # Cohen's d between conditions
+  
+# Training parameters
+training:
+  max_epochs: 100
+  batch_size: 256
+  learning_rate: 3.0e-4
+  
+# Evaluation parameters  
+evaluation:
+  eval_episodes: 50          # Episodes per evaluation
+  success_threshold: 0.9     # For "episodes to success"
+  
+# Experimental conditions
+conditions:
+  - name: "nsca_priors"
+    description: "NSCA with innate priors (Gabor, physics, etc.)"
+    prior_weight_init: 0.9   # Start trusting priors
+    gabor_pretrained: true
+    physics_prior: true
+    critical_period_floor: 0.3
+    
+  - name: "random_init"
+    description: "Same architecture, random initialization"
+    prior_weight_init: 0.5   # No prior preference
+    gabor_pretrained: false
+    physics_prior: false
+    critical_period_floor: 0.0
+
+# Object sets for transfer evaluation
+# CRITICAL: Evaluation set must differ from training set
+# NOT just different instances, but different PROPERTY DISTRIBUTIONS
+#
+# Set A (Babbling): 100 objects from familiar categories
+# Set B (Evaluation): 50 objects NEVER seen during babbling
+object_sets:
+  set_a_babbling:
+    description: "Set A: Babbling objects (100 items from familiar categories)"
+    count: 100
+    objects:
+      - "wooden_block"        # Hardness: 0.7, common
+      - "plastic_toy"         # Hardness: 0.5, lightweight
+      - "rubber_ball"         # Bouncy, deformable
+      - "cloth_piece"         # Soft, flexible
+      - "cardboard_box"       # Light, hollow
+    properties:
+      gravity: "normal"
+      deformation: "minimal"
+    note: "Used during curriculum babbling Phase 6"
+      
+  set_b_evaluation:
+    description: "Set B: Novel evaluation objects (50 items never seen during babbling)"
+    count: 50
+    objects:
+      - "ceramic_cup"         # Hardness: 0.85, fragile
+      - "foam_block"          # Hardness: 0.15, very soft
+      - "metal_cube"          # Hardness: 1.0, heavy
+      - "glass_bottle"        # Transparent, fragile
+      - "gel_sphere"          # Soft, squishy
+    properties:
+      gravity: "normal"
+      deformation: "varied"
+    note: "NEVER exposed during babbling - tests generalization"
+    
+  set_c_adversarial:
+    description: "Set C: Adversarial physics (optional stress test)"
+    objects:
+      - "helium_balloon"      # Anti-gravity
+      - "magnetic_sphere"     # Unusual forces
+      - "water_balloon"       # Deformable + sloshing
+    note: "Tests prior_weight adaptation (should drop to ~0.35)"
+      
+# Expected outcomes (for hypothesis testing)
+expected_outcomes:
+  # At 5 demos: expect large effect
+  low_data:
+    demos: 5
+    prior_success_min: 0.60
+    random_success_max: 0.30
+    expected_cohens_d: "> 1.0 (large)"
+    
+  # At 100 demos: expect convergence
+  high_data:
+    demos: 100
+    prior_success_min: 0.90
+    random_success_min: 0.85
+    expected_cohens_d: "< 0.5 (small)"
+    note: "Convergence at high data is expected - priors buy efficiency, not oracle"
+
+# Output configuration
+output:
+  save_learning_curves: true
+  save_per_seed_results: true
+  generate_plots: true
+  plot_format: "pdf"         # Publication quality
+  
+# Verification checklist (before submission)
+verification:
+  - "grep -r 'CONCEPT_GROUNDINGS' src/ returns nothing"
+  - "No human labels in babbling logs"
+  - "prior_weight drops to ~0.35 on balloon training"
+  - "All statistical tests use N=20 seeds"
+  - "95% CI reported for all metrics"

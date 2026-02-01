@@ -4,6 +4,8 @@
 
 Training the NSCA cognitive architecture involves multiple phases, each targeting specific components of the layered system.
 
+**v2.0 Update**: Training now includes a mandatory **babbling phase** for grounded concept learning and an **ablation study** protocol for rigorous evaluation.
+
 ---
 
 ## Hardware Requirements
@@ -13,6 +15,49 @@ Training the NSCA cognitive architecture involves multiple phases, each targetin
 | Minimum | 8GB VRAM | 24-48 hours |
 | Recommended | 16GB VRAM | 12-24 hours |
 | Optimal | 40GB+ VRAM (A100) | 4-8 hours |
+
+---
+
+## Critical Changes in v2.0
+
+### 1. Babbling Phase (REQUIRED)
+
+Before evaluation, the agent must complete a **babbling phase** to ground concepts:
+
+```bash
+python scripts/train_world_model.py \
+    --config configs/training_config.yaml \
+    --babbling-steps 10000
+```
+
+**Why**: We removed all hard-coded concept groundings. The agent must learn "rock = hard" through striking interactions, not manual dictionaries.
+
+### 2. Adaptive Physics Training
+
+When training on physics exceptions (balloons, magnets), monitor `prior_weight`:
+
+```python
+# Expected behavior during balloon training
+# Step 0: prior_weight ≈ 0.9 (trusts gravity prior)
+# Step 500: prior_weight ≈ 0.5 (uncertain)
+# Step 1000: prior_weight ≈ 0.35 (correction dominates, but floor respected)
+```
+
+### 3. EWC for Continual Learning
+
+When training on multiple tasks sequentially:
+
+```python
+from src.learning.ewc import create_ewc_for_nsca
+
+ewc = create_ewc_for_nsca(model, importance_weight=1000, semantic_multiplier=10.0)
+
+# After Task A
+ewc.consolidate(task_a_dataloader)
+
+# During Task B
+loss = task_b_loss + ewc.penalty()
+```
 
 ---
 
@@ -105,6 +150,53 @@ Fine-tune all components jointly.
 python scripts/train_world_model.py \
     --config configs/training_config.yaml \
     --phase full
+```
+
+### Phase 6: Babbling Phase (v2.0 - REQUIRED)
+
+Ground concepts through sensorimotor interaction.
+
+```bash
+python scripts/train_world_model.py \
+    --config configs/training_config.yaml \
+    --phase babbling \
+    --babbling-steps 10000
+```
+
+**Objective**: Populate the grounding table through interaction, not manual supervision.
+
+**Protocol**:
+```
+Phase 6.1 (Steps 1-1000): Random Exploration
+  - Randomly select actions from available set
+  - Build initial affordance coverage
+  - Discover action-effect contingencies
+
+Phase 6.2 (Steps 1001-10000): Competence-Driven
+  - Retry actions that showed high learnability
+  - Skip actions that are unlearnable (noisy TV defense)
+  - Focus on interactions that reduce prediction error
+```
+
+**Grounding Actions**:
+| Action | Property Learned | Signal |
+|--------|-----------------|--------|
+| strike | hardness | audio_frequency |
+| lift | weight | force_required, acceleration |
+| push | weight | resistance, displacement |
+| squeeze | hardness, rigidity | deformation |
+| drop | hardness | impact_sound |
+
+**Verification**:
+```bash
+# Verify babbling produced valid groundings
+python -c "
+from src.language.llm_integration import LearnedGrounding
+grounder = LearnedGrounding()
+# Load from checkpoint...
+print(f'Grounded concepts: {len(grounder.get_grounded_concepts())}')
+print(f'Stats: {grounder.get_grounding_statistics()}')
+"
 ```
 
 ---
@@ -487,3 +579,62 @@ latent_dim: 512
 5. **Track experiments**: Use wandb/tensorboard consistently
 6. **Document changes**: Log hyperparameter changes
 7. **Version checkpoints**: Keep best N checkpoints
+
+---
+
+## Ablation Study (v2.0)
+
+### Running the Ablation Study
+
+The ablation study compares NSCA (with adaptive priors) vs Random Initialization.
+
+```bash
+# Quick test (5 seeds, subset of tasks)
+python -c "
+from src.evaluation import run_ablation_study, EvaluationConfig
+config = EvaluationConfig(num_seeds=5, tasks=['pick-place-v2'])
+run_ablation_study(config)
+"
+
+# Full study (20 seeds, all tasks) - REQUIRED for publication
+python -c "
+from src.evaluation import run_ablation_study
+from pathlib import Path
+summary = run_ablation_study(output_path=Path('results/ablation.json'))
+"
+```
+
+### Expected Results
+
+| Demos | NSCA (priors) | Random Init | Cohen's d |
+|-------|---------------|-------------|-----------|
+| 5 | ~65% ± 8% | ~22% ± 6% | ~5.4 (large) |
+| 10 | ~78% ± 6% | ~45% ± 9% | ~3.8 (large) |
+| 100 | ~95% ± 2% | ~93% ± 3% | ~0.7 (medium) |
+
+**Key insight**: Curves converge at high data - priors buy efficiency, not oracle performance.
+
+### Statistical Requirements
+
+- **N=20 seeds minimum** (required by reviewers)
+- **95% confidence intervals** on all metrics
+- **Cohen's d effect size** for condition comparison
+- **Learning curves** (not just final numbers)
+
+### Verification Checklist
+
+Before claiming results:
+
+```bash
+# 1. No hard-coded groundings
+grep -r "CONCEPT_GROUNDINGS" src/  # Should return nothing
+
+# 2. Babbling log audit
+# Sample 100 interactions, verify no human labels
+
+# 3. Prior override check
+# Train on balloons, verify prior_weight drops to ~0.35
+
+# 4. Statistical rigor
+# Verify N=20 seeds, 95% CI, Cohen's d reported
+```

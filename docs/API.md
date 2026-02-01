@@ -485,17 +485,123 @@ word, confidence = lang.find_matching_word(property_vector)
 answer = lang.answer_property_question(properties, "Is this fragile?")
 ```
 
-### Known Concept Groundings
+### Learned Grounding (v2.0)
 
-Pre-defined property vectors for common concepts:
+**REMOVED**: Hard-coded `CONCEPT_GROUNDINGS` dictionary.
+**ADDED**: `LearnedGrounding` populated through sensorimotor babbling.
 
-| Concept | Hardness | Weight | Size | Animacy |
-|---------|----------|--------|------|---------|
-| rock | 0.9 | 0.7 | 0.3 | 0.0 |
-| water | 0.0 | 0.3 | 0.5 | 0.0 |
-| animal | 0.5 | 0.5 | 0.5 | 1.0 |
-| glass | 0.9 | 0.3 | 0.4 | 0.0 |
-| metal | 1.0 | 0.9 | 0.5 | 0.0 |
+```python
+from src.language.llm_integration import LearnedGrounding
+
+grounder = LearnedGrounding()
+
+# Initially empty (no hard-coded concepts!)
+assert len(grounder.get_grounded_concepts()) == 0
+
+# Learn through interaction
+grounder.learn_from_interaction(
+    object_id='rock_001',
+    action='strike',
+    sensory_feedback={'audio_frequency': 0.9}  # High freq = hard
+)
+
+# Now 'rock_001' is grounded
+props = grounder('rock_001')  # Returns learned properties
+```
+
+---
+
+## New in v2.0: Adaptive Priors
+
+### `AdaptivePhysicsPrior`
+
+Physics priors that can learn exceptions (balloons, magnets):
+
+```python
+from src.reasoning.intuitive_physics import AdaptivePhysicsPrior
+
+prior = AdaptivePhysicsPrior(feature_dim=256)
+
+# Forward pass returns: is_supported, motion, diagnostics
+is_supported, motion, diag = prior(object_state)
+
+# Check prior weight (always >= 0.3 due to critical period floor)
+print(f"Prior weight: {diag['prior_weight']}")  # ~0.9 initially
+
+# After training on balloons, prior_weight drops to ~0.35
+# Correction network learns "balloons go up"
+```
+
+### `RobustCuriosityReward`
+
+Curiosity with noisy-TV defense:
+
+```python
+from src.motivation.intrinsic_reward import RobustCuriosityReward
+
+curiosity = RobustCuriosityReward(state_dim=256)
+
+reward, diagnostics = curiosity(state, next_state, action)
+
+# diagnostics contains:
+# - 'learnability': How much error decreased (high = worth learning)
+# - 'prediction_error': Raw prediction error
+# - 'filtered_reward': error × learnability
+```
+
+### `DynamicPropertyBank`
+
+Open-ended property discovery:
+
+```python
+from src.semantics.property_layer import DynamicPropertyBank
+
+bank = DynamicPropertyBank(input_dim=256, num_slots=32)
+
+# 9 known slots + 23 free slots
+values, diagnostics = bank(world_state)
+
+# Check for discovered properties
+active_free = bank.get_active_free_slots()  # E.g., [9, 12] for stickiness, elasticity
+
+# Ground discovered slots post-hoc
+bank.ground_free_slot(slot_idx=0, name="stickiness")
+```
+
+### `ElasticWeightConsolidation`
+
+Prevent catastrophic forgetting:
+
+```python
+from src.learning.ewc import MemoryAwareEWC, EWCConfig
+
+ewc = MemoryAwareEWC(model, EWCConfig(semantic_multiplier=10.0))
+
+# After training on Task A:
+ewc.consolidate(task_a_dataloader)
+
+# During training on Task B:
+loss = task_b_loss + ewc.penalty()  # Protects important weights
+```
+
+### `CurriculumBabbling`
+
+Two-phase grounding protocol:
+
+```python
+from src.learning import CurriculumBabbling, SimulatedBabblingEnvironment
+
+babbling = CurriculumBabbling()
+env = SimulatedBabblingEnvironment()
+
+while not babbling.is_complete:
+    action = babbling.select_action(env.get_available_actions())
+    feedback = env.execute_action(action)
+    babbling.record_interaction(env.get_current_object_id(), action, feedback, error)
+
+# Phase 1 (steps 1-1000): Random exploration
+# Phase 2 (steps 1001-10000): Competence-driven (retry learnable actions)
+```
 
 ---
 

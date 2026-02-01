@@ -1,0 +1,143 @@
+# Weights & Biases Configuration for NSCA Training
+# 
+# Setup:
+#   1. pip install wandb
+#   2. wandb login
+#   3. Update 'entity' below with your username
+#
+# Usage:
+#   python scripts/train_world_model.py --wandb-config configs/wandb_config.yaml
+
+# Project settings
+project: "nsca-world-model"
+entity: null  # Your WandB username (set via CLI or here)
+name: null    # Run name (auto-generated if null)
+tags:
+  - "nsca"
+  - "cognitive-architecture"
+  - "physics-priors"
+notes: "NSCA World Model training with adaptive physics priors"
+
+# Run settings
+mode: "online"  # online, offline, disabled
+save_code: true
+job_type: "train"  # train, eval, sweep
+
+# Logging settings
+log_freq: 100           # Log every N steps
+log_model: "best"       # Log model checkpoints: all, best, end
+log_graph: false        # Log computation graph (slow)
+
+# Metrics to track
+metrics:
+  # Training metrics
+  - name: "train/loss"
+    summary: "min"
+  - name: "train/vision_loss"
+    summary: "min"
+  - name: "train/audio_loss"
+    summary: "min"
+  - name: "train/dynamics_loss"
+    summary: "min"
+  
+  # Validation metrics
+  - name: "val/loss"
+    summary: "min"
+  - name: "val/accuracy"
+    summary: "max"
+  
+  # Prior weight tracking
+  - name: "prior/weight"
+    summary: "last"
+  - name: "prior/correction_magnitude"
+    summary: "mean"
+  
+  # Memory metrics
+  - name: "memory/episodic_size"
+    summary: "last"
+  - name: "memory/semantic_size"
+    summary: "last"
+  
+  # Curiosity metrics
+  - name: "curiosity/reward"
+    summary: "mean"
+  - name: "curiosity/learnability"
+    summary: "mean"
+  
+  # Slot attention metrics
+  - name: "slots/active_count"
+    summary: "last"
+  - name: "slots/entropy"
+    summary: "mean"
+  
+  # EWC metrics
+  - name: "ewc/penalty"
+    summary: "mean"
+  - name: "ewc/task_a_retention"
+    summary: "last"
+
+# Alerts (optional)
+alerts:
+  - name: "Training diverged"
+    condition: "train/loss > 100"
+    severity: "error"
+  - name: "Prior collapsed"
+    condition: "prior/weight < 0.3"
+    severity: "warning"
+  - name: "Slot collapse detected"
+    condition: "slots/entropy < 0.5"
+    severity: "warning"
+
+# Sweep configuration (for hyperparameter search)
+sweep:
+  name: "nsca-prior-weight-sweep"
+  method: "bayes"
+  metric:
+    name: "val/accuracy"
+    goal: "maximize"
+  parameters:
+    prior_initial_weight:
+      min: 0.5
+      max: 0.95
+    prior_min_weight:
+      values: [0.2, 0.3, 0.4]
+    learning_rate:
+      min: 0.0001
+      max: 0.01
+      distribution: "log_uniform"
+    ewc_weight:
+      values: [100, 1000, 10000]
+    curiosity_learnability_threshold:
+      min: 0.05
+      max: 0.3
+  early_terminate:
+    type: "hyperband"
+    min_iter: 10
+    eta: 3
+
+# Artifact settings
+artifacts:
+  # Model checkpoints
+  - name: "model-checkpoint"
+    type: "model"
+    description: "NSCA model checkpoint"
+    
+  # Babbling logs
+  - name: "babbling-logs"
+    type: "dataset"
+    description: "Interaction logs from babbling phase"
+    
+  # Evaluation results
+  - name: "ablation-results"
+    type: "result"
+    description: "Ablation study results"
+
+# Report template (auto-generated at end of training)
+report:
+  title: "NSCA Training Report"
+  sections:
+    - "Training Summary"
+    - "Learning Curves"
+    - "Prior Weight Adaptation"
+    - "Slot Discovery"
+    - "Ablation Results"

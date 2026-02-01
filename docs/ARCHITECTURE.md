@@ -4,43 +4,61 @@
 
 The Neuro-Symbolic Cognitive Architecture (NSCA) implements a **five-layer cognitive stack** inspired by biological cognition. Each layer builds upon the previous, creating increasingly abstract and semantically meaningful representations.
 
+**Architectural Update (v2.0)**: Following peer review, the architecture now implements **adaptive priors** rather than fixed rules, **learned grounding** through sensorimotor babbling, and **robust intrinsic motivation** with noisy-TV defense.
+
 ## Design Principles
 
-### 1. Innate Priors Over Tabula Rasa
+### 1. Adaptive Priors Over Fixed Rules
 
-Unlike conventional deep learning that learns everything from pixels, NSCA incorporates **biologically-inspired innate priors**:
+**Key Innovation**: Priors are now *learnable biases*, not hard-coded rules.
 
-- **Color Opponency**: Red-green, blue-yellow opponent channels (retinal ganglion cells)
-- **Edge Detection**: Gabor filters mimicking V1 simple cells
-- **Depth Cues**: Height-in-field, texture gradients
-- **Auditory Processing**: Mel-frequency filterbanks (basilar membrane)
-- **Temporal Causality**: Causal masking, exponential decay
+```
+OLD: prior = fixed_value (breaks on exceptions)
+NEW: output = w × prior + (1-w) × correction (learns exceptions)
+```
 
-### 2. Properties Over Patterns
+The **critical period floor** (w ≥ 0.3) ensures physics knowledge is never completely forgotten:
 
-Objects are understood through **semantic properties** rather than pixel patterns:
+```python
+effective_weight = 0.3 + softplus(learned_weight - 0.3)  # Always ≥ 0.3
+```
+
+### 2. Learned Grounding Over Hard-Coded Dictionaries
+
+**Removed**: All manual concept groundings (CONCEPT_GROUNDINGS dict)
+**Added**: Sensorimotor babbling protocol
+
+```
+OLD: "rock" → [0.9, 0.7, 0.3, ...] (manually defined)
+NEW: "rock" → strike_interaction → audio_frequency → learned hardness
+```
+
+### 3. Properties Over Patterns (with Dynamic Slots)
+
+Objects are understood through **semantic properties**, now with open-ended discovery:
 
 ```
 Traditional: Image → CNN → "rock" (pattern matching)
-NSCA: Image → Priors → Properties (hard=0.9, gray, small) → "rock" (grounded)
+NSCA v1: Image → Priors → 9 fixed properties → "rock"
+NSCA v2: Image → Priors → Slot Attention → 9 known + N discoverable properties
 ```
 
-### 3. Causation Over Correlation
+### 4. Robust Intrinsic Motivation
 
-Learning emphasizes **causal relationships** through intervention:
+**Problem Solved**: "Noisy TV" problem (random noise has high prediction error)
+**Solution**: Learnability filtering
 
+```python
+reward = prediction_error × learnability
+# High error + high learnability = learn (novel physics)
+# High error + low learnability = ignore (random noise)
 ```
-Correlation: "When A, then B" (statistical)
-Causation: "I did A, therefore B" (intervention-based)
-```
 
-### 4. Intrinsic Motivation Over External Reward
+### 5. Continual Learning with EWC
 
-The agent learns because of **internal drives**, not just external feedback:
-
-- **Curiosity**: Prediction error as reward signal
-- **Competence**: Satisfaction from successful predictions
-- **Information Gain**: Reduction of uncertainty
+**Added**: Elastic Weight Consolidation prevents catastrophic forgetting
+- Semantic memory: 10× protection (consolidated knowledge)
+- Episodic memory: 1× protection (can be overwritten)
 
 ---
 
@@ -175,23 +193,35 @@ Extracts meaningful properties from world state.
 
 ### Property Layer (`src/semantics/property_layer.py`)
 
+**UPDATED**: Now includes `DynamicPropertyBank` for open-ended property discovery:
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ PROPERTY EXTRACTION                                             │
+│ DYNAMIC PROPERTY EXTRACTION (Slot Attention)                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ Property          │ Source                │ Range               │
+│ KNOWN SLOTS (0-8) - Initialized with priors                     │
 ├───────────────────┼───────────────────────┼─────────────────────┤
-│ Hardness          │ Audio (high freq)     │ [0=soft, 1=hard]    │
-│ Weight            │ Proprio (force/accel) │ [0=light, 1=heavy]  │
-│ Size              │ Visual (extent)       │ [0=tiny, 1=large]   │
-│ Animacy           │ Motion (self-propel)  │ [0=inanimate, 1=animate] │
-│ Rigidity          │ Visual (deformation)  │ [0=flexible, 1=rigid] │
-│ Transparency      │ Visual                │ [0=opaque, 1=clear] │
-│ Roughness         │ Visual (texture)      │ [0=smooth, 1=rough] │
-│ Temperature       │ Context-inferred      │ [0=cold, 1=hot]     │
-│ Containment       │ Visual (shape)        │ [0=solid, 1=hollow] │
+│ Slot 0: Hardness  │ Audio (high freq)     │ [0=soft, 1=hard]    │
+│ Slot 1: Weight    │ Video dynamics        │ [0=light, 1=heavy]  │
+│ Slot 2: Size      │ Visual (extent)       │ [0=tiny, 1=large]   │
+│ Slot 3: Animacy   │ Motion (self-propel)  │ [0=inanimate, 1=animate] │
+│ Slot 4: Rigidity  │ Visual (deformation)  │ [0=flexible, 1=rigid] │
+│ Slot 5: Transparency │ Visual             │ [0=opaque, 1=clear] │
+│ Slot 6: Roughness │ Visual (texture)      │ [0=smooth, 1=rough] │
+│ Slot 7: Temperature │ Context-inferred    │ [0=cold, 1=hot]     │
+│ Slot 8: Containment │ Visual (shape)      │ [0=solid, 1=hollow] │
+├─────────────────────────────────────────────────────────────────┤
+│ FREE SLOTS (9-31) - Activated by prediction error               │
+├───────────────────┼───────────────────────────────────────────────┤
+│ Slot 9+: ???      │ Discovered through learning                  │
+│                   │ E.g., "stickiness", "elasticity"             │
+│                   │ Grounded post-hoc via LLM/human labeling     │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+**Also added**: `RobustSlotAttention` with reconstruction-based OOD detection
+- If reconstruction error > threshold, output "uncertain"
+- Prevents adversarial inputs from populating symbolic layer
 
 ### Affordances (`src/semantics/affordances.py`)
 
@@ -239,14 +269,27 @@ Understands WHY things happen.
 
 ### Intuitive Physics (`src/reasoning/intuitive_physics.py`)
 
-Partially innate physics expectations:
+**UPDATED**: Now uses **Adaptive Physics Priors** with residual correction networks:
 
 ```python
-GravityPrior:     Unsupported objects fall
-SolidityPrior:    Objects don't pass through each other
-ContactCausality: Causation requires contact (usually)
-SupportPrior:     Objects need support to stay up
+# Old (brittle)
+GravityPrior:     if not supported: fall  # Breaks on balloons
+
+# New (adaptive)
+AdaptivePhysicsPrior:
+    prior_motion = [0, -9.8, 0]  # Innate gravity expectation
+    correction = correction_net(object_state)  # Learned exceptions
+    output = w × prior_motion + (1-w) × correction
+    
+    # Critical period: w always ≥ 0.3 (never forgets physics)
+    # Balloon training: w drops to ~0.35, correction learns "up"
 ```
+
+Physics laws with adaptive priors:
+- **Gravity**: Objects fall (but balloons can override)
+- **Solidity**: Objects don't pass through (but permeable surfaces exist)
+- **Contact**: Causation requires contact (but magnets don't)
+- **Support**: Objects need support (but levitation possible)
 
 ### Counterfactual Reasoning (`src/reasoning/counterfactual.py`)
 
@@ -281,11 +324,23 @@ Provides intrinsic reasons to learn.
 
 ### Intrinsic Reward (`src/motivation/intrinsic_reward.py`)
 
+**UPDATED**: Now uses `RobustCuriosityReward` with noisy-TV defense:
+
 ```python
+# Old (vulnerable to noisy TV)
+curiosity_reward = prediction_error  # Random noise gets high reward!
+
+# New (RobustCuriosityReward)
+learnability = (early_error - recent_error) / early_error  # Error reduction
+curiosity_reward = prediction_error × learnability
+
+# Noisy TV: High error but no decrease → learnability ≈ 0 → reward ≈ 0
+# Novel physics: High error, decreases over time → high reward
+
 Total Reward = (
-    0.4 × Curiosity Reward (prediction error) +
-    0.4 × Competence Reward (learning progress) +
-    0.2 × Information Gain (uncertainty reduction)
+    0.4 × RobustCuriosityReward +  # With EMA encoder for stable hashing
+    0.4 × Competence Reward +
+    0.2 × Information Gain
 )
 ```
 
@@ -308,20 +363,28 @@ Grounds language in perceptual concepts.
 
 ### Language Grounding (`src/language/llm_integration.py`)
 
+**CRITICAL UPDATE**: Removed all hard-coded concept groundings. Grounding now learned via babbling.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ BIDIRECTIONAL GROUNDING                                         │
+│ LEARNED GROUNDING (via Sensorimotor Babbling)                   │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  Concept → Language:                                            │
-│    Properties [0.9, 0.7, 0.3, 0.0, ...] → "hard, heavy, small" │
+│  OLD (REMOVED - was scientific misconduct):                     │
+│    CONCEPT_GROUNDINGS = {"rock": [0.9, 0.7, ...]}              │
 │                                                                 │
-│  Language → Concept:                                            │
-│    "rock" → Properties [0.9, 0.7, 0.3, 0.0, 0.9, 0.0, 0.7...] │
+│  NEW (LearnedGrounding):                                        │
+│    grounding_table = {}  # Starts EMPTY                         │
 │                                                                 │
-│  LLM Integration:                                               │
-│    Perceptual description → LLM → Linguistic reasoning          │
-│    LLM response → Ground back in concept space                  │
+│  Babbling Protocol:                                             │
+│    Phase 1 (1000 steps): Random exploration                     │
+│    Phase 2 (9000 steps): Competence-driven (retry learnable)    │
+│                                                                 │
+│  Learning from Interaction:                                     │
+│    strike(rock) → audio_frequency=0.9 → grounding["rock"][0]=0.9│
+│    lift(rock) → force_required=0.7 → grounding["rock"][1]=0.7  │
+│                                                                 │
+│  Evaluation: Report "zero-shot AFTER babbling", not "zero-shot" │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -433,6 +496,8 @@ agent = create_cognitive_agent(config.world_model, use_llm=True)
 
 ## Memory Architecture
 
+**UPDATED**: Added Elastic Weight Consolidation (EWC) to prevent catastrophic forgetting.
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    MEMORY SYSTEMS                               │
@@ -443,20 +508,26 @@ agent = create_cognitive_agent(config.world_model, use_llm=True)
 │  ├─ previous_state: Last world state (for change detection)    │
 │  └─ current_properties: Current property vector                 │
 │                                                                 │
-│  Episodic Memory (experiences)                                  │
+│  Episodic Memory (experiences) - 1× EWC protection              │
 │  ├─ Vector store with metadata                                  │
 │  ├─ Cosine similarity retrieval                                 │
-│  └─ Max 10,000 entries                                          │
+│  └─ Max 10,000 entries (can be overwritten)                     │
 │                                                                 │
-│  Semantic Memory (concepts)                                     │
+│  Semantic Memory (concepts) - 10× EWC protection                │
 │  ├─ Prototype vectors                                           │
 │  ├─ Learned from repeated patterns                              │
-│  └─ Consolidated from episodic                                  │
+│  ├─ Consolidated from episodic                                  │
+│  └─ HIGHLY PROTECTED (consolidated knowledge)                   │
 │                                                                 │
 │  Causal Memory (relationships)                                  │
 │  ├─ Intervention → Effect mappings                              │
 │  └─ Causal graph structure                                      │
 │                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  EWC Protection (`src/learning/ewc.py`)                         │
+│  ├─ Computes Fisher information (parameter importance)          │
+│  ├─ Penalty for changing important weights                      │
+│  └─ 10× multiplier for semantic memory parameters               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
