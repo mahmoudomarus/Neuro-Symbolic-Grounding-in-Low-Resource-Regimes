@@ -1,18 +1,16 @@
 """
-Spatial coordinate prior: 3D rotary position encoding for body-centric coordinates.
+Spatial innate priors - understanding 3D structure from 2D images.
 
-Biological inspiration:
-- Vestibular system provides innate sense of position and orientation
-- Humans know up/down, left/right without learning
-- Spatial awareness is fundamental, not derived
+These encode fundamental spatial reasoning that appears to be largely innate:
 
-Implementation:
-- 3D extension of rotary positional encoding
-- Encodes (x, y, z) position and (roll, pitch, yaw) orientation
-- Fixed frequency basis (not learned)
-- Applied to proprioceptive or spatial features
+1. SpatialPrior3D: Encodes 3D spatial relationships
+   - 2D rotary position embeddings (translation equivariance)
+   - Perspective projection understanding
+   - Occlusion reasoning (closer objects block farther)
+
+2. RotaryEmbedding2D: Position encoding via rotation
+   - Same object at different positions = same identity, just moved
 """
-
 from __future__ import annotations
 
 import math
@@ -20,277 +18,379 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+import sys
+from pathlib import Path
+_project_root = Path(__file__).resolve().parent.parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+# Import directly from module to avoid circular imports
+from src.world_model.geometry import RotaryEmbedding2D
+from src.world_model.config import GeometryConfig
 
 
-class RotaryEmbedding3D(nn.Module):
+class SpatialPrior3D(nn.Module):
     """
-    Three-dimensional rotary position embedding for spatial coordinates.
+    Encode 3D spatial relationships as innate priors.
     
-    Extends rotary position encoding to 3D space (position + orientation).
-    Used for encoding body state in 3D world coordinates.
+    Combines:
+    - 2D Rotary embeddings (position encoding via rotation)
+    - Perspective projection understanding (objects shrink with distance)
+    - Scale consistency (same object at different depths = different sizes)
     
-    Encodes:
-    - Position: (x, y, z) coordinates
-    - Orientation: (roll, pitch, yaw) angles
-    
-    All encoded using frequency-based rotation (RoPE-style).
-    """
-    
-    def __init__(
-        self,
-        dim: int = 256,
-        max_position: float = 100.0,  # meters
-        max_angle: float = 2 * math.pi,  # radians
-        base_freq: float = 10000.0,
-        num_freq_bands: int = 16,
-    ):
-        """
-        Initialize 3D rotary position encoding.
-        
-        Args:
-            dim: Feature dimension (must be divisible by 6 for x,y,z,roll,pitch,yaw)
-            max_position: Maximum position magnitude (for position encoding)
-            max_angle: Maximum angle (2*pi for full rotation)
-            base_freq: Base frequency for RoPE
-            num_freq_bands: Number of frequency bands per dimension
-        """
-        super().__init__()
-        
-        assert dim % 6 == 0, f"dim must be divisible by 6, got {dim}"
-        
-        self.dim = dim
-        self.max_position = max_position
-        self.max_angle = max_angle
-        self.base_freq = base_freq
-        self.num_freq_bands = num_freq_bands
-        
-        # Each dimension gets dim/6 channels
-        self.dim_per_axis = dim // 6
-        
-        # Position axes: x, y, z
-        # Orientation axes: roll, pitch, yaw
-        
-        # Create frequency bands for each axis type
-        # Positions use different scale than orientations
-        self._create_position_frequencies()
-        self._create_orientation_frequencies()
-        
-    def _create_position_frequencies(self):
-        """Create frequency bands for position encoding (x, y, z)."""
-        # Position frequencies: linear spacing from low to high
-        # Normalize positions to [-1, 1] first
-        freqs = torch.linspace(1, self.num_freq_bands, self.num_freq_bands)
-        
-        # Register as buffers (non-learnable)
-        for axis in ['x', 'y', 'z']:
-            self.register_buffer(f"pos_freq_{axis}", freqs.clone())
-    
-    def _create_orientation_frequencies(self):
-        """Create frequency bands for orientation encoding (roll, pitch, yaw)."""
-        # Orientation frequencies: different scale for angular encoding
-        freqs = torch.linspace(1, self.num_freq_bands, self.num_freq_bands)
-        
-        for axis in ['roll', 'pitch', 'yaw']:
-            self.register_buffer(f"ori_freq_{axis}", freqs.clone())
-    
-    def _positional_encoding(self, position: torch.Tensor, freq: torch.Tensor) -> torch.Tensor:
-        """
-        Generate positional encoding using sinusoidal functions.
-        
-        Args:
-            position: [B, 1] position values
-            freq: [num_bands] frequency multipliers
-            
-        Returns:
-            Encoded position: [B, num_bands * 2]
-        """
-        # Normalize to [-1, 1]
-        position_norm = torch.clamp(position / self.max_position, -1, 1)
-        
-        # Expand: [B, 1, 1] * [1, 1, num_bands] = [B, 1, num_bands]
-        angles = position_norm.unsqueeze(-1) * freq.unsqueeze(0).unsqueeze(0)
-        
-        # Sinusoidal encoding: sin and cos
-        sin_enc = torch.sin(angles)
-        cos_enc = torch.cos(angles)
-        
-        # Concatenate: [B, 1, num_bands * 2]
-        encoding = torch.cat([sin_enc, cos_enc], dim=-1)
-        
-        # Flatten: [B, num_bands * 2]
-        return encoding.squeeze(1)
-    
-    def _orientation_encoding(self, angle: torch.Tensor, freq: torch.Tensor) -> torch.Tensor:
-        """
-        Generate orientation encoding using sinusoidal functions.
-        
-        Args:
-            angle: [B, 1] angle values in radians
-            freq: [num_bands] frequency multipliers
-            
-        Returns:
-            Encoded angle: [B, num_bands * 2]
-        """
-        # Angles wrap around, so we don't normalize
-        # Expand: [B, 1, 1] * [1, 1, num_bands] = [B, 1, num_bands]
-        angles = angle.unsqueeze(-1) * freq.unsqueeze(0).unsqueeze(0)
-        
-        # Sinusoidal encoding
-        sin_enc = torch.sin(angles)
-        cos_enc = torch.cos(angles)
-        
-        encoding = torch.cat([sin_enc, cos_enc], dim=-1)
-        
-        return encoding.squeeze(1)
-    
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
-        """
-        Encode 3D state (position + orientation) into features.
-        
-        Args:
-            state: [B, 12] where:
-                - [:3] = position (x, y, z)
-                - [3:6] = velocity (vx, vy, vz) - treated like position
-                - [6:12] = IMU/orientation (roll, pitch, yaw and derivatives)
-                
-        Returns:
-            Encoded features: [B, dim]
-        """
-        B = state.shape[0]
-        
-        # Extract components
-        position = state[:, :3]  # [B, 3]
-        velocity = state[:, 3:6]  # [B, 3]
-        orientation = state[:, 6:9]  # [B, 3] - roll, pitch, yaw
-        angular_vel = state[:, 9:12]  # [B, 3]
-        
-        encodings = []
-        
-        # Encode position (x, y, z)
-        for i, axis in enumerate(['x', 'y', 'z']):
-            freq = getattr(self, f"pos_freq_{axis}")
-            enc = self._positional_encoding(position[:, i:i+1], freq)
-            encodings.append(enc)
-        
-        # Encode velocity like position
-        for i, axis in enumerate(['x', 'y', 'z']):
-            freq = getattr(self, f"pos_freq_{axis}")
-            enc = self._positional_encoding(velocity[:, i:i+1], freq)
-            encodings.append(enc)
-        
-        # Encode orientation (roll, pitch, yaw)
-        for i, axis in enumerate(['roll', 'pitch', 'yaw']):
-            freq = getattr(self, f"ori_freq_{axis}")
-            enc = self._orientation_encoding(orientation[:, i:i+1], freq)
-            encodings.append(enc)
-        
-        # Encode angular velocity like orientation
-        for i, axis in enumerate(['roll', 'pitch', 'yaw']):
-            freq = getattr(self, f"ori_freq_{axis}")
-            enc = self._orientation_encoding(angular_vel[:, i:i+1], freq)
-            encodings.append(enc)
-        
-        # Concatenate all encodings
-        # We have 12 components, each with num_bands * 2 features
-        # But we need to match dim, so we'll project down
-        all_encodings = torch.cat(encodings, dim=1)  # [B, 12 * num_bands * 2]
-        
-        # Project to desired dimension
-        # For now, just take first 'dim' features
-        # In full implementation, we'd learn a projection
-        if all_encodings.shape[1] > self.dim:
-            return all_encodings[:, :self.dim]
-        else:
-            # Pad if needed
-            padding = torch.zeros(B, self.dim - all_encodings.shape[1], device=state.device)
-            return torch.cat([all_encodings, padding], dim=1)
-
-
-class SimplifiedRotary3D(nn.Module):
-    """
-    Simplified 3D rotary encoding using standard RoPE extended to 3D.
-    
-    More efficient than the full positional encoding above.
+    This encodes the fundamental truth that visual space has structure,
+    and position is not something to learn but something that IS.
     """
     
     def __init__(
-        self,
-        dim: int = 256,
-        max_seq_len: int = 2048,
-        base: float = 10000.0,
-    ):
+        self, 
+        dim: int, 
+        max_height: int, 
+        max_width: int,
+        apply_perspective: bool = True,
+    ) -> None:
+        """
+        Initialize 3D spatial prior.
+        
+        Args:
+            dim: Channel dimension for rotary embeddings (must be even)
+            max_height: Maximum spatial height
+            max_width: Maximum spatial width
+            apply_perspective: Whether to apply perspective scale modulation
+        """
         super().__init__()
         
         self.dim = dim
-        self.max_seq_len = max_seq_len
-        self.base = base
+        self.max_height = max_height
+        self.max_width = max_width
+        self.apply_perspective = apply_perspective
         
-        # Create inverse frequencies (standard RoPE)
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
+        # 2D Rotary position embeddings
+        geometry_config = GeometryConfig(
+            dim=dim,
+            max_height=max_height,
+            max_width=max_width,
+        )
+        self.rotary_2d = RotaryEmbedding2D(geometry_config)
         
-    def _compute_cos_sin(self, seq_len: int, device: torch.device):
-        """Precompute cos and sin for rotary encoding."""
-        t = torch.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
+        # Perspective prior: objects at top of image (far) appear smaller
+        # This encodes the ground plane assumption
+        if apply_perspective:
+            scale_prior = self._create_perspective_prior(max_height, max_width)
+            self.register_buffer('scale_prior', scale_prior)
         
-        # Outer product: [seq_len] x [dim//2] -> [seq_len, dim//2]
-        freqs = torch.outer(t, self.inv_freq)
+        # Depth ordering prior: provides expected depth at each position
+        depth_prior = self._create_depth_prior(max_height, max_width)
+        self.register_buffer('depth_prior', depth_prior)
         
-        # Duplicate for complex representation
-        emb = torch.cat([freqs, freqs], dim=-1)  # [seq_len, dim]
+    def _create_perspective_prior(self, height: int, width: int) -> torch.Tensor:
+        """
+        Create perspective scale prior.
         
-        cos = emb.cos()
-        sin = emb.sin()
+        Objects at the top of the image (assumed to be far away on a ground plane)
+        should have their features scaled down to reflect foreshortening.
         
-        return cos, sin
+        Returns:
+            Scale prior [1, 1, H, W]
+        """
+        # Linear scale from 1.0 (bottom, close) to 0.5 (top, far)
+        y_scale = torch.linspace(0.5, 1.0, height).unsqueeze(1).expand(height, width)
+        return y_scale.unsqueeze(0).unsqueeze(0)
     
+    def _create_depth_prior(self, height: int, width: int) -> torch.Tensor:
+        """
+        Create depth ordering prior.
+        
+        Encodes expected relative depth at each spatial position.
+        Lower in image = closer (higher depth value).
+        
+        Returns:
+            Depth prior [1, 1, H, W] with values in [0, 1]
+        """
+        # Depth increases towards bottom of image (closer)
+        y_depth = torch.linspace(0.0, 1.0, height).unsqueeze(1).expand(height, width)
+        return y_depth.unsqueeze(0).unsqueeze(0)
+        
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Apply spatial priors to feature map.
+        
+        Args:
+            features: Input features [B, C, H, W] where C must equal self.dim
+            
+        Returns:
+            Features with spatial encoding [B, C, H, W]
+        """
+        B, C, H, W = features.shape
+        
+        if C != self.dim:
+            raise ValueError(f"Feature channels {C} must match dim {self.dim}")
+        
+        if H > self.max_height or W > self.max_width:
+            raise ValueError(
+                f"Spatial size ({H}, {W}) exceeds max ({self.max_height}, {self.max_width})"
+            )
+        
+        # Apply rotary position encoding
+        features = self.rotary_2d(features)
+        
+        # Apply perspective scale modulation if enabled
+        if self.apply_perspective:
+            # Interpolate scale prior if sizes don't match
+            if H != self.max_height or W != self.max_width:
+                scale = F.interpolate(
+                    self.scale_prior, 
+                    size=(H, W), 
+                    mode='bilinear', 
+                    align_corners=False
+                )
+            else:
+                scale = self.scale_prior[:, :, :H, :W]
+            
+            features = features * scale
+        
+        return features
+    
+    def get_depth_prior(self, height: int, width: int) -> torch.Tensor:
+        """
+        Get depth prior for given spatial size.
+        
+        Args:
+            height: Target height
+            width: Target width
+            
+        Returns:
+            Depth prior [1, 1, H, W]
+        """
+        if height != self.max_height or width != self.max_width:
+            return F.interpolate(
+                self.depth_prior,
+                size=(height, width),
+                mode='bilinear',
+                align_corners=False
+            )
+        return self.depth_prior
+
+
+class OcclusionPrior(nn.Module):
+    """
+    Occlusion reasoning prior.
+    
+    Encodes the principle that closer objects block farther objects.
+    This is used to determine which features should "win" when
+    multiple objects overlap at the same spatial location.
+    """
+    
+    def __init__(self, dim: int) -> None:
+        """
+        Initialize occlusion prior.
+        
+        Args:
+            dim: Feature dimension
+        """
+        super().__init__()
+        self.dim = dim
+        
+        # Depth-based attention: learns to weight features by estimated depth
+        self.depth_attention = nn.Sequential(
+            nn.Conv2d(dim, dim // 4, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(dim // 4, 1, kernel_size=1),
+            nn.Sigmoid(),
+        )
+        
     def forward(
-        self,
-        x: torch.Tensor,
-        position_3d: torch.Tensor,
+        self, 
+        features: torch.Tensor, 
+        depth_prior: torch.Tensor
     ) -> torch.Tensor:
         """
-        Apply rotary encoding to features based on 3D position.
+        Apply occlusion-aware weighting to features.
         
         Args:
-            x: [B, N, dim] features to encode
-            position_3d: [B, N, 3] 3D positions
+            features: Input features [B, C, H, W]
+            depth_prior: Expected depth [B, 1, H, W] or [1, 1, H, W]
             
         Returns:
-            Encoded features: [B, N, dim]
+            Occlusion-weighted features [B, C, H, W]
         """
-        B, N, D = x.shape
+        # Estimate local depth confidence from features
+        depth_confidence = self.depth_attention(features)  # [B, 1, H, W]
         
-        # Convert 3D position to 1D sequence index (simple sum)
-        # More sophisticated: use Hilbert curve or similar
-        seq_indices = (position_3d.abs().sum(dim=-1) * 10).long() % self.max_seq_len
+        # Combine with prior depth
+        combined_depth = depth_confidence * depth_prior
         
-        # Compute cos/sin
-        cos, sin = self._compute_cos_sin(self.max_seq_len, x.device)
+        # Weight features by depth (closer = higher weight)
+        weighted_features = features * combined_depth
         
-        # Apply rotary encoding
-        # This is a simplified version - full RoPE applies rotation in complex plane
-        x_rot = x * cos[seq_indices] + torch.roll(x, shifts=D//2, dims=-1) * sin[seq_indices]
-        
-        return x_rot
+        return weighted_features
 
 
-def apply_3d_rotary(
-    features: torch.Tensor,
-    position_3d: torch.Tensor,
-    dim: int = 256,
-) -> torch.Tensor:
+class CenterSurroundPrior(nn.Module):
     """
-    Convenience function for 3D rotary encoding.
+    Center-surround spatial attention prior.
     
-    Args:
-        features: [B, N, dim] features
-        position_3d: [B, N, 3] 3D positions
-        dim: Feature dimension
-        
-    Returns:
-        Rotated features: [B, N, dim]
+    The human visual system has a strong center bias - we attend more
+    to the center of the visual field. This is largely innate.
     """
-    rotary = SimplifiedRotary3D(dim=dim)
-    rotary = rotary.to(features.device)
-    return rotary(features, position_3d)
+    
+    def __init__(self, height: int, width: int, sigma: float = 0.3) -> None:
+        """
+        Initialize center-surround prior.
+        
+        Args:
+            height: Spatial height
+            width: Spatial width
+            sigma: Spread of center bias (fraction of image size)
+        """
+        super().__init__()
+        
+        # Create 2D Gaussian centered in image
+        y = torch.linspace(-1, 1, height).unsqueeze(1).expand(height, width)
+        x = torch.linspace(-1, 1, width).unsqueeze(0).expand(height, width)
+        
+        # Gaussian falloff from center
+        center_bias = torch.exp(-(x**2 + y**2) / (2 * sigma**2))
+        
+        # Normalize to [0, 1] range
+        center_bias = center_bias / center_bias.max()
+        
+        self.register_buffer('center_bias', center_bias.unsqueeze(0).unsqueeze(0))
+        
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Apply center-surround attention bias.
+        
+        Args:
+            features: Input features [B, C, H, W]
+            
+        Returns:
+            Center-biased features [B, C, H, W]
+        """
+        B, C, H, W = features.shape
+        
+        # Interpolate if sizes don't match
+        if H != self.center_bias.shape[2] or W != self.center_bias.shape[3]:
+            bias = F.interpolate(
+                self.center_bias,
+                size=(H, W),
+                mode='bilinear',
+                align_corners=False
+            )
+        else:
+            bias = self.center_bias
+        
+        return features * bias
+
+
+class GridCellPrior(nn.Module):
+    """
+    Grid cell-like spatial encoding.
+    
+    Inspired by grid cells in the entorhinal cortex, which encode
+    position using periodic (grid-like) firing patterns.
+    
+    This provides a different type of position encoding that is
+    more suitable for spatial navigation and metric distance encoding.
+    """
+    
+    def __init__(
+        self,
+        dim: int,
+        max_height: int,
+        max_width: int,
+        num_scales: int = 4,
+        base_frequency: float = 0.1,
+    ) -> None:
+        """
+        Initialize grid cell prior.
+        
+        Args:
+            dim: Output dimension (must be divisible by 2 * num_scales)
+            max_height: Maximum spatial height
+            max_width: Maximum spatial width
+            num_scales: Number of different grid scales
+            base_frequency: Base frequency for smallest grid
+        """
+        super().__init__()
+        
+        assert dim % (2 * num_scales) == 0, \
+            f"dim ({dim}) must be divisible by 2 * num_scales ({2 * num_scales})"
+        
+        self.dim = dim
+        self.num_scales = num_scales
+        self.features_per_scale = dim // num_scales
+        
+        # Create grid patterns at different scales and orientations
+        grid_patterns = self._create_grid_patterns(
+            max_height, max_width, num_scales, base_frequency
+        )
+        self.register_buffer('grid_patterns', grid_patterns)
+        
+    def _create_grid_patterns(
+        self,
+        height: int,
+        width: int,
+        num_scales: int,
+        base_freq: float,
+    ) -> torch.Tensor:
+        """
+        Create multi-scale grid patterns.
+        
+        Returns:
+            Grid patterns [dim, H, W]
+        """
+        y = torch.linspace(0, height, height).unsqueeze(1).expand(height, width)
+        x = torch.linspace(0, width, width).unsqueeze(0).expand(height, width)
+        
+        patterns = []
+        features_per_scale = self.features_per_scale
+        
+        for scale_idx in range(num_scales):
+            freq = base_freq * (2 ** scale_idx)
+            
+            # Multiple orientations per scale
+            num_orientations = features_per_scale // 2
+            for orient_idx in range(num_orientations):
+                angle = orient_idx * math.pi / num_orientations
+                
+                # Rotated coordinates
+                x_rot = x * math.cos(angle) + y * math.sin(angle)
+                y_rot = -x * math.sin(angle) + y * math.cos(angle)
+                
+                # Sinusoidal patterns (like grid cell firing)
+                pattern_sin = torch.sin(2 * math.pi * freq * x_rot)
+                pattern_cos = torch.cos(2 * math.pi * freq * y_rot)
+                
+                patterns.append(pattern_sin)
+                patterns.append(pattern_cos)
+        
+        return torch.stack(patterns, dim=0)  # [dim, H, W]
+    
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """
+        Add grid cell encoding to features.
+        
+        Args:
+            features: Input features [B, C, H, W]
+            
+        Returns:
+            Features with grid encoding [B, C + dim, H, W]
+        """
+        B, C, H, W = features.shape
+        
+        # Interpolate grid patterns if sizes don't match
+        if H != self.grid_patterns.shape[1] or W != self.grid_patterns.shape[2]:
+            grid = F.interpolate(
+                self.grid_patterns.unsqueeze(0),
+                size=(H, W),
+                mode='bilinear',
+                align_corners=False
+            ).expand(B, -1, -1, -1)
+        else:
+            grid = self.grid_patterns.unsqueeze(0).expand(B, -1, -1, -1)
+        
+        # Concatenate with features
+        return torch.cat([features, grid], dim=1)

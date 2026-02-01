@@ -1,21 +1,59 @@
 """
-Innate sensory priors: The "born with" knowledge that structures perception.
+Innate priors module - mathematical structures that exist before learning.
 
-These are fixed, non-learned transformations that mirror biological sensory processing:
-- Visual: Gabor filterbank (like retinal/V1 orientation columns)
-- Audio: Mel-frequency spectrogram (like cochlear frequency separation)
-- Spatial: 3D rotary position encoding (like vestibular spatial awareness)
+These priors encode fundamental properties of perception that humans have from birth:
+- Visual: Color opponency, edge detection (Gabor), depth cues
+- Audio: Cochlear-like mel processing, onset detection
+- Spatial: 3D understanding from 2D, perspective, occlusion
+- Temporal: Causality, recency, periodicity
 """
 
-from .visual_prior import GaborFilterbank, apply_gabor_filters
-from .audio_prior import MelFilterbank, create_mel_spectrogram
-from .spatial_prior import RotaryEmbedding3D, apply_3d_rotary
+from .visual_prior import (
+    ColorOpponencyPrior, 
+    GaborPrior, 
+    DepthCuesPrior,
+    TextureGradientPrior,
+)
+from .audio_prior import (
+    AuditoryPrior, 
+    OnsetDetector,
+    SpectralContrastPrior,
+    PitchPrior,
+)
+from .spatial_prior import (
+    SpatialPrior3D,
+    OcclusionPrior,
+    CenterSurroundPrior,
+    GridCellPrior,
+)
+from .temporal_prior import (
+    TemporalPrior,
+    RelativeTemporalEncoding,
+    TemporalConvolutionPrior,
+    CausalityPrior,
+    RhythmPrior,
+)
 
 __all__ = [
-    "GaborFilterbank",
-    "apply_gabor_filters",
-    "MelFilterbank",
-    "create_mel_spectrogram",
-    "RotaryEmbedding3D",
-    "apply_3d_rotary",
+    # Visual
+    "ColorOpponencyPrior",
+    "GaborPrior", 
+    "DepthCuesPrior",
+    "TextureGradientPrior",
+    # Audio
+    "AuditoryPrior",
+    "OnsetDetector",
+    "SpectralContrastPrior",
+    "PitchPrior",
+    # Spatial
+    "SpatialPrior3D",
+    "OcclusionPrior",
+    "CenterSurroundPrior",
+    "GridCellPrior",
+    # Temporal
+    "TemporalPrior",
+    "RelativeTemporalEncoding",
+    "TemporalConvolutionPrior",
+    "CausalityPrior",
+    "RhythmPrior",
 ]

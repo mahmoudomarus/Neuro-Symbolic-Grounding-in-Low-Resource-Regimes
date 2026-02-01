@@ -1,18 +1,119 @@
-# Virtual environment
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ===== Virtual Environments =====
 .venv/
 venv/
 env/
+ENV/
 
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
+# ===== Testing =====
 .pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
 
-# IDE
+# ===== IDE / Editors =====
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+.ropeproject
 
-# OS
+# ===== OS Files =====
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ===== Jupyter Notebook =====
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ===== Data & Cache =====
+data/
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.npy
+*.npz
+
+# HuggingFace cache
+huggingface_cache/
+.cache/
+
+# ===== Model Weights & Checkpoints =====
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+weights/
+models/
+
+# ===== Training Artifacts =====
+logs/
+runs/
+outputs/
+results/
+*.log
+
+# ===== Weights & Biases =====
+wandb/
+*.wandb
+
+# ===== TensorBoard =====
+tensorboard/
+events.out.tfevents.*
+
+# ===== Memory Files =====
+*.memory
+memory_*.pth
+
+# ===== Large Files =====
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
+
+# ===== Secrets & Config =====
+.env
+.env.*
+secrets.yaml
+secrets.json
+*.secret
+
+# ===== Temporary Files =====
+tmp/
+temp/
+*.tmp
+*.temp

@@ -1,10 +1,40 @@
+# Core dependencies
 torch>=2.0.0
 torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# ML/Data Science
 scikit-learn>=1.0.0
+numpy>=1.21.0
+pandas>=1.5.0
+
+# Visualization
 matplotlib>=3.5.0
 streamlit>=1.28.0
-pandas>=1.5.0
+
+# Pre-trained models (SOTA mode)
 transformers>=4.30.0
 timm>=0.9.0
 open-clip-torch>=2.20.0
+
+# Image processing
 pillow>=9.0.0
+opencv-python>=4.5.0
+
+# Audio processing (for audio encoder)
+librosa>=0.10.0
+
+# HuggingFace datasets (for training)
+datasets>=2.14.0
+
+# Configuration
+pyyaml>=6.0
+
+# Logging
+wandb>=0.15.0
+
+# Testing
+pytest>=7.0.0
+
+# Utilities
+tqdm>=4.60.0

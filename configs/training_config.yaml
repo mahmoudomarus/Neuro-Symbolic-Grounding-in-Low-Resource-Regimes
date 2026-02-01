@@ -1,0 +1,190 @@
+# Training configuration for the Unified World Model
+# Target: A100 40GB GPU
+# Estimated training time: ~150-180 hours total
+
+# Reproducibility
+seed: 42
+
+# Model configuration
+model:
+  latent_dim: 512
+  state_dim: 256
+  action_dim: 32
+  
+  vision:
+    input_height: 224
+    input_width: 224
+    input_channels: 3
+    latent_dim: 512
+    num_gabor_orientations: 8
+    num_gabor_scales: 4
+    gabor_kernel_size: 15
+    use_spatial_prior: true
+    use_color_prior: true
+    use_gabor_prior: true
+    use_depth_prior: true
+    
+  audio:
+    sample_rate: 16000
+    n_mels: 80
+    n_fft: 400
+    hop_length: 160
+    latent_dim: 256
+    output_dim: 512
+    use_onset_prior: true
+    
+  proprio:
+    input_dim: 12
+    hidden_dim: 128
+    output_dim: 512
+    num_layers: 3
+    dropout: 0.1
+    
+  fusion:
+    dim: 512
+    num_heads: 8
+    num_layers: 4
+    dropout: 0.1
+    
+  temporal:
+    dim: 512
+    num_heads: 8
+    num_layers: 6
+    max_seq_len: 64
+    state_dim: 256
+    dropout: 0.1
+    use_causal: true
+    
+  dynamics:
+    state_dim: 256
+    action_dim: 32
+    hidden_dim: 512
+    num_layers: 3
+    dropout: 0.1
+    use_residual: true
+    predict_uncertainty: true
+
+# Training phases
+training:
+  # Phase 1: Vision encoder (contrastive learning)
+  vision:
+    epochs: 100
+    batch_size: 256
+    learning_rate: 0.0003
+    weight_decay: 0.01
+    warmup_epochs: 10
+    temperature: 0.5
+    augmentation:
+      random_resized_crop: 224
+      horizontal_flip: true
+      color_jitter: [0.4, 0.4, 0.4, 0.1]
+      random_grayscale: 0.2
+  
+  # Phase 2: Audio encoder (contrastive learning)
+  audio:
+    epochs: 50
+    batch_size: 128
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    warmup_epochs: 5
+    max_audio_length: 80000  # 5 seconds at 16kHz
+    augmentation:
+      time_stretch: [0.8, 1.2]
+      pitch_shift: [-2, 2]
+      add_noise: 0.1
+  
+  # Phase 3: Cross-modal fusion
+  fusion:
+    epochs: 50
+    batch_size: 64
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    warmup_epochs: 5
+    freeze_encoders: true
+  
+  # Phase 4: Temporal model + Dynamics
+  temporal:
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    warmup_epochs: 10
+    sequence_length: 16
+    prediction_horizon: 4
+    
+  # General training settings
+  general:
+    gradient_accumulation_steps: 4
+    mixed_precision: true
+    gradient_clip: 1.0
+    save_every_n_epochs: 10
+    eval_every_n_epochs: 5
+    log_every_n_steps: 100
+    num_workers: 8
+    pin_memory: true
+
+# Data configuration
+data:
+  # HuggingFace datasets
+  vision_dataset: "imagenet-1k"
+  vision_dataset_subset: null  # Use full dataset
+  
+  audio_dataset: "mozilla-foundation/common_voice_11_0"
+  audio_dataset_lang: "en"
+  
+  video_dataset: "HuggingFaceM4/webvid"
+  video_dataset_subset: "10M"  # Use 10M subset
+  
+  # Alternative smaller datasets for testing
+  small_vision_dataset: "cifar100"
+  small_audio_dataset: "speech_commands"
+  small_video_dataset: "HuggingFaceM4/something_something_v2"
+  
+  # Paths
+  cache_dir: "./data/huggingface_cache"
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"
+
+# Loss weights
+loss:
+  # Contrastive loss weights
+  contrastive_weight: 1.0
+  
+  # VICReg regularization
+  variance_weight: 25.0
+  invariance_weight: 25.0
+  covariance_weight: 1.0
+  
+  # Dynamics prediction
+  prediction_weight: 1.0
+  uncertainty_weight: 0.1
+  
+  # Cross-modal alignment
+  alignment_weight: 1.0
+
+# Optimizer
+optimizer:
+  name: "adamw"
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+# Learning rate scheduler
+scheduler:
+  name: "cosine"
+  min_lr: 1.0e-6
+  warmup_type: "linear"
+
+# Logging
+logging:
+  use_wandb: true
+  wandb_project: "nsca-world-model"
+  wandb_entity: null  # Your wandb username
+  log_images: true
+  log_attention: true
+
+# Checkpointing
+checkpoint:
+  save_best: true
+  save_last: true
+  metric: "loss"
+  mode: "min"
