@@ -190,9 +190,9 @@ class RandAugment:
         factor = (m / 10.0) * 0.5
         
         T, C, H, W = x.shape
-        x_flat = x.view(T * C, 1, H, W)
+        x_flat = x.contiguous().reshape(T * C, 1, H, W)
         sharpened = F.conv2d(x_flat, kernel, padding=1)
-        sharpened = sharpened.view(T, C, H, W)
+        sharpened = sharpened.reshape(T, C, H, W)
         
         return torch.clamp(x + factor * (sharpened - x), -2.5, 2.5)
     
