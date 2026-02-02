@@ -34,15 +34,16 @@ else
     AUTO_UPLOAD="--auto-upload"
 fi
 
-# Default parameters
+# Default parameters - IMPROVED for better convergence
 DATA_DIR="${DATA_DIR:-/workspace/vis-data}"
-EPOCHS="${EPOCHS:-100}"
-BATCH_SIZE="${BATCH_SIZE:-16}"
-LR="${LR:-1e-4}"
+EPOCHS="${EPOCHS:-200}"
+BATCH_SIZE="${BATCH_SIZE:-32}"
+LR="${LR:-3e-4}"
 DEVICE="${DEVICE:-cuda}"
 SAVE_DIR="${SAVE_DIR:-./checkpoints}"
 HF_REPO="${HF_REPO:-omartabius/NSCA}"
 CONFIG="${CONFIG:-./configs/training_config.yaml}"
+PATIENCE="${PATIENCE:-30}"
 
 # Check if data directory exists
 if [ ! -d "$DATA_DIR" ]; then
@@ -64,6 +65,7 @@ echo "  Data Directory: $DATA_DIR"
 echo "  Epochs: $EPOCHS"
 echo "  Batch Size: $BATCH_SIZE"
 echo "  Learning Rate: $LR"
+echo "  Patience: $PATIENCE"
 echo "  Device: $DEVICE"
 echo "  Save Directory: $SAVE_DIR"
 echo "  HuggingFace Repo: $HF_REPO"
@@ -85,6 +87,7 @@ if [ "$NO_HF_UPLOAD" = "1" ]; then
         --device "$DEVICE" \
         --save-dir "$SAVE_DIR" \
         --config "$CONFIG" \
+        --patience "$PATIENCE" \
         --enhanced-aug \
         --physics-aware
 else
@@ -96,6 +99,7 @@ else
         --device "$DEVICE" \
         --save-dir "$SAVE_DIR" \
         --config "$CONFIG" \
+        --patience "$PATIENCE" \
         --enhanced-aug \
         --physics-aware \
         --hf-repo "$HF_REPO" \

@@ -1229,6 +1229,7 @@ def train_enhanced(
     physics_aware: bool = True,
     hf_callback: Optional[HuggingFaceCallback] = None,
     config_path: Optional[str] = None,
+    patience: int = 10,
 ):
     """
     Enhanced training with unified augmentation and auto HF upload.
@@ -1305,8 +1306,7 @@ def train_enhanced(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     
-    # Early stopping
-    patience = 10
+    # Early stopping (uses patience parameter)
     patience_counter = 0
     best_val_loss = float('inf')
     
@@ -1457,6 +1457,7 @@ def main():
     parser.add_argument('--device', type=str, default='cuda', help="Device")
     parser.add_argument('--save-dir', type=str, default='checkpoints', help="Save directory")
     parser.add_argument('--config', type=str, default=None, help="Path to YAML config")
+    parser.add_argument('--patience', type=int, default=10, help="Early stopping patience")
     
     # Augmentation options
     parser.add_argument('--enhanced-aug', action='store_true', default=True,
@@ -1506,6 +1507,7 @@ def main():
         physics_aware=args.physics_aware,
         hf_callback=hf_callback,
         config_path=args.config,
+        patience=args.patience,
     )
     
     # Upload to HuggingFace if requested (post-training)
