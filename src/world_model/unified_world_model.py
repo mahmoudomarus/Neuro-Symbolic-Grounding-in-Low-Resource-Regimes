@@ -29,7 +29,12 @@ if str(_project_root) not in sys.path:
 from src.encoders.vision_encoder import VisionEncoderWithPriors, VisionEncoderConfig
 from src.encoders.audio_encoder import AudioEncoderWithPriors, AudioEncoderConfig
 from src.encoders.proprio_encoder import ProprioEncoder, ProprioEncoderConfig
-from src.fusion.cross_modal import CrossModalFusion, FusionConfig
+from src.fusion.cross_modal import (
+    CrossModalFusion,
+    EnhancedCrossModalFusion,
+    FusionConfig,
+    create_fusion_module,
+)
 from src.world_model.temporal_world_model import TemporalWorldModel, TemporalWorldModelConfig
 from src.world_model.enhanced_dynamics import EnhancedDynamicsPredictor, EnhancedDynamicsConfig
 from src.memory.dual_memory import DualMemorySystem
@@ -70,7 +75,14 @@ class WorldModelConfig:
         dim=512,
         num_heads=8,
         num_layers=4,
+        fusion_type="hierarchical",
+        use_contrastive=True,
+        use_temporal_sync=True,
+        use_cross_modal_prediction=True,
     ))
+    
+    # Use enhanced fusion
+    use_enhanced_fusion: bool = True
     
     # Temporal
     temporal: TemporalWorldModelConfig = field(default_factory=lambda: TemporalWorldModelConfig(
@@ -139,7 +151,12 @@ class UnifiedWorldModel(nn.Module):
         
         # ===== CROSS-MODAL FUSION =====
         
-        self.fusion = CrossModalFusion(config.fusion)
+        if config.use_enhanced_fusion:
+            self.fusion = EnhancedCrossModalFusion(config.fusion)
+            self.use_enhanced_fusion = True
+        else:
+            self.fusion = CrossModalFusion(config.fusion)
+            self.use_enhanced_fusion = False
         
         # ===== TEMPORAL PROCESSING =====
         
@@ -257,9 +274,23 @@ class UnifiedWorldModel(nn.Module):
             proprio = proprio.unsqueeze(1)
         
         # Fuse modalities
-        fused, attn = self.fusion(vision, audio, proprio)
-        
-        return fused, attn
+        if self.use_enhanced_fusion:
+            fusion_result = self.fusion(vision, audio, proprio, return_losses=False)
+            fused = fusion_result['fused']
+            # For enhanced fusion, create sequence from hierarchical features if available
+            if 'hierarchical' in fusion_result and 'vision_enriched' in fusion_result['hierarchical']:
+                # Concatenate enriched modalities for sequence output
+                v_enr = fusion_result['hierarchical']['vision_enriched']
+                a_enr = fusion_result['hierarchical']['audio_enriched']
+                p_enr = fusion_result['hierarchical']['proprio_enriched']
+                fused_seq = torch.cat([v_enr, a_enr, p_enr], dim=1)
+            else:
+                # Fall back to expanding fused output
+                fused_seq = fused.unsqueeze(1)
+            return fused_seq, None
+        else:
+            fused, attn = self.fusion(vision, audio, proprio)
+            return fused, attn
     
     def build_world_state(
         self,
@@ -403,6 +434,7 @@ class UnifiedWorldModel(nn.Module):
         audio: Optional[torch.Tensor] = None,
         proprio: Optional[torch.Tensor] = None,
         actions: Optional[torch.Tensor] = None,
+        return_fusion_losses: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Full forward pass through the world model.
@@ -412,6 +444,7 @@ class UnifiedWorldModel(nn.Module):
             audio: Audio input [B, T_samples] (optional)
             proprio: Proprioception [B, T, 12] (optional)
             actions: Action sequence [B, T_a, action_dim] (optional)
+            return_fusion_losses: Whether to return fusion-related losses
             
         Returns:
             Dict containing:
@@ -419,6 +452,7 @@ class UnifiedWorldModel(nn.Module):
             - 'fused_features': Fused multi-modal features [B, T, D]
             - 'predicted_states': Future states if actions provided
             - 'uncertainties': Prediction uncertainties
+            - 'fusion_losses': Contrastive and prediction losses (if enabled)
         """
         B = vision.shape[0]
         device = vision.device
@@ -429,15 +463,70 @@ class UnifiedWorldModel(nn.Module):
         if proprio is None:
             proprio = torch.zeros(B, 1, 12, device=device)
         
-        # Build world state
-        fused, attn = self.encode_multimodal(vision, audio, proprio)
-        world_state, temporal_features = self.temporal_model(fused)
+        # Encode inputs
+        if vision.dim() == 5:
+            vision_enc = self.encode_vision(vision)
+        elif vision.dim() == 4:
+            vision_enc = self.encode_vision(vision).unsqueeze(1)
+        else:
+            vision_enc = vision
+        
+        if audio.dim() == 2 and audio.shape[1] > self.config.latent_dim:
+            audio_enc = self.encode_audio(audio)
+        else:
+            audio_enc = audio
+            
+        if proprio.dim() == 3 and proprio.shape[2] == 12:
+            proprio_enc = self.encode_proprio(proprio)
+        else:
+            proprio_enc = proprio
+        
+        # Ensure time dimension
+        if vision_enc.dim() == 2:
+            vision_enc = vision_enc.unsqueeze(1)
+        if audio_enc.dim() == 2:
+            T = vision_enc.shape[1]
+            audio_enc = audio_enc.unsqueeze(1).expand(-1, T, -1)
+        if proprio_enc.dim() == 2:
+            proprio_enc = proprio_enc.unsqueeze(1)
+        
+        # Fuse with optional losses
+        if self.use_enhanced_fusion and return_fusion_losses:
+            fusion_result = self.fusion(
+                vision_enc, audio_enc, proprio_enc,
+                return_losses=True
+            )
+            fused = fusion_result['fused']
+            
+            # Build fused sequence
+            if 'hierarchical' in fusion_result and 'vision_enriched' in fusion_result['hierarchical']:
+                v_enr = fusion_result['hierarchical']['vision_enriched']
+                a_enr = fusion_result['hierarchical']['audio_enriched']
+                p_enr = fusion_result['hierarchical']['proprio_enriched']
+                fused_seq = torch.cat([v_enr, a_enr, p_enr], dim=1)
+            else:
+                fused_seq = fused.unsqueeze(1)
+            
+            fusion_losses = {}
+            if 'contrastive' in fusion_result:
+                fusion_losses['contrastive_loss'] = fusion_result['contrastive']['loss_total']
+            if 'prediction' in fusion_result:
+                fusion_losses['prediction_loss'] = fusion_result['prediction']['loss_total']
+        else:
+            fused_seq, _ = self.encode_multimodal(vision, audio, proprio)
+            fusion_losses = None
+        
+        # Temporal processing
+        world_state, temporal_features = self.temporal_model(fused_seq)
         
         results = {
             'world_state': world_state,
-            'fused_features': fused,
+            'fused_features': fused_seq,
             'temporal_features': temporal_features,
         }
+        
+        if fusion_losses is not None:
+            results['fusion_losses'] = fusion_losses
         
         # Imagination if actions provided
         if actions is not None:
@@ -446,6 +535,36 @@ class UnifiedWorldModel(nn.Module):
             results['uncertainties'] = uncertainties
         
         return results
+    
+    def compute_fusion_loss(
+        self,
+        vision: torch.Tensor,
+        audio: torch.Tensor,
+        proprio: torch.Tensor,
+        contrastive_weight: float = 0.3,
+        prediction_weight: float = 0.25,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute fusion-related losses for training.
+        
+        Args:
+            vision: Visual features [B, T, D]
+            audio: Audio features [B, T, D]
+            proprio: Proprioception features [B, T, D]
+            contrastive_weight: Weight for contrastive loss
+            prediction_weight: Weight for prediction loss
+            
+        Returns:
+            Dictionary with losses
+        """
+        if not self.use_enhanced_fusion:
+            return {'total_loss': torch.tensor(0.0, device=vision.device)}
+        
+        return self.fusion.compute_loss(
+            vision, audio, proprio,
+            contrastive_weight=contrastive_weight,
+            prediction_weight=prediction_weight,
+        )
     
     def get_memory_stats(self) -> Dict[str, Any]:
         """Get memory system statistics."""

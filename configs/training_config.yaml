@@ -1,4 +1,4 @@
-# Training configuration for the Unified World Model
+# Training configuration for the Unified World Model v2.0
 # Target: A100 40GB GPU
 # Estimated training time: ~150-180 hours total
 
@@ -10,6 +10,7 @@ model:
   latent_dim: 512
   state_dim: 256
   action_dim: 32
+  use_enhanced_fusion: true  # Enable hierarchical fusion
   
   vision:
     input_height: 224
@@ -45,6 +46,17 @@ model:
     num_heads: 8
     num_layers: 4
     dropout: 0.1
+    # Enhanced fusion settings (v2.0)
+    fusion_type: "hierarchical"  # early, mid, late, hierarchical
+    use_contrastive: true
+    contrastive_temperature: 0.07
+    contrastive_dim: 256
+    use_temporal_sync: true
+    max_temporal_length: 100
+    use_cross_modal_prediction: true
+    early_weight: 0.3
+    mid_weight: 0.4
+    late_weight: 0.3
     
   temporal:
     dim: 512
@@ -188,3 +200,124 @@ checkpoint:
   save_last: true
   metric: "loss"
   mode: "min"
+
+# Enhanced Augmentation (v2.0)
+augmentation:
+  enabled: true
+  probability: 0.5
+  physics_aware: true  # Disable gravity-inconsistent transforms for physics tasks
+  synchronized: true   # Same random seed across modalities for temporal alignment
+  
+  vision:
+    # RandAugment settings
+    rand_augment:
+      n: 2  # Number of augmentations to apply
+      m: 9  # Magnitude (0-10)
+    
+    # MixUp/CutMix
+    mixup_alpha: 0.2
+    cutmix_alpha: 1.0
+    mix_prob: 0.5
+    
+    # Temporal augmentation
+    temporal_dropout: 0.1
+    speed_range: [0.8, 1.2]
+    
+    # Basic augmentations
+    horizontal_flip_p: 0.5
+    brightness_range: [0.8, 1.2]
+    contrast_range: [0.8, 1.2]
+    crop_scale: [0.85, 1.0]
+    
+    # Color jitter
+    color_jitter_p: 0.8
+    color_jitter_brightness: 0.4
+    color_jitter_contrast: 0.4
+    color_jitter_saturation: 0.4
+    color_jitter_hue: 0.1
+    
+    # Grayscale
+    grayscale_p: 0.2
+  
+  audio:
+    sample_rate: 16000
+    
+    # SpecAugment
+    spec_augment:
+      freq_mask: 27  # Maximum frequency mask width
+      time_mask: 100  # Maximum time mask width
+      num_freq_masks: 2
+      num_time_masks: 2
+    
+    # Pitch shifting (semitones)
+    pitch_shift: [-4, 4]
+    
+    # Room reverb
+    reverb_prob: 0.3
+    room_scale_range: [0.3, 0.8]
+    
+    # Background noise
+    background_prob: 0.3
+    snr_range: [10, 30]  # dB
+    
+    # Time stretch
+    time_stretch: [0.8, 1.2]
+    
+    # Basic augmentations
+    volume_range: [0.8, 1.2]
+    noise_std: 0.005
+    time_shift_samples: 1000
+  
+  proprio:
+    # Sensor noise
+    noise_std: 0.01
+    noise_type: "gaussian"  # gaussian, uniform, laplace
+    
+    # Joint dropout
+    joint_dropout: 0.1
+    min_joints_kept: 6
+    
+    # Temporal jitter
+    temporal_jitter_ms: 10
+    sample_rate: 100  # Hz
+    
+    # Coordinate perturbation
+    position_noise: 0.005  # meters
+    velocity_noise: 0.01   # m/s
+    acceleration_noise: 0.02  # m/s^2
+    orientation_noise: 0.01   # radians
+    
+    # Scaling
+    scale_range: [0.95, 1.05]
+    
+    # Drift simulation
+    drift_prob: 0.1
+    drift_magnitude: 0.02
+
+# Cross-modal settings (v2.0)
+cross_modal:
+  # Fusion type
+  fusion_type: "hierarchical"  # early, mid, late, hierarchical
+  
+  # Contrastive alignment
+  contrastive_weight: 0.3
+  temperature: 0.07
+  
+  # Cross-modal prediction
+  prediction_weight: 0.25
+  
+  # Physics prior
+  physics_weight: 0.2
+  
+  # Reconstruction
+  reconstruction_weight: 0.15
+  
+  # Classification
+  classification_weight: 0.1
+
+# HuggingFace Integration (v2.0)
+huggingface:
+  repo_id: "omartabius/NSCA"
+  auto_upload: true
+  upload_frequency: "best"  # best, epoch, checkpoint
+  update_model_card: true
