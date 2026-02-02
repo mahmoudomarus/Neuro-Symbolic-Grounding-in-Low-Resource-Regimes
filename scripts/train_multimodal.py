@@ -1412,9 +1412,12 @@ def train_enhanced(
             print(f"  Saved best model (val_loss: {best_val_loss:.4f})")
             patience_counter = 0
             
-            # Auto-upload to HuggingFace
+            # Auto-upload to HuggingFace (with error protection)
             if hf_callback is not None:
-                hf_callback.on_epoch_end(epoch, train_metrics, val_metrics, model_path)
+                try:
+                    hf_callback.on_epoch_end(epoch, train_metrics, val_metrics, model_path)
+                except Exception as e:
+                    print(f"  HuggingFace upload failed (continuing training): {e}")
         else:
             patience_counter += 1
             if patience_counter >= patience:

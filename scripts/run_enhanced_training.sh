@@ -74,19 +74,34 @@ echo ""
 echo "Starting training..."
 echo ""
 
-python scripts/train_multimodal.py \
-    --data-dir "$DATA_DIR" \
-    --epochs "$EPOCHS" \
-    --batch-size "$BATCH_SIZE" \
-    --lr "$LR" \
-    --device "$DEVICE" \
-    --save-dir "$SAVE_DIR" \
-    --config "$CONFIG" \
-    --enhanced-aug \
-    --physics-aware \
-    --hf-repo "$HF_REPO" \
-    $AUTO_UPLOAD \
-    --upload-hf
+# Check if HF upload should be disabled
+if [ "$NO_HF_UPLOAD" = "1" ]; then
+    echo -e "${YELLOW}HuggingFace upload disabled (NO_HF_UPLOAD=1)${NC}"
+    python scripts/train_multimodal.py \
+        --data-dir "$DATA_DIR" \
+        --epochs "$EPOCHS" \
+        --batch-size "$BATCH_SIZE" \
+        --lr "$LR" \
+        --device "$DEVICE" \
+        --save-dir "$SAVE_DIR" \
+        --config "$CONFIG" \
+        --enhanced-aug \
+        --physics-aware
+else
+    python scripts/train_multimodal.py \
+        --data-dir "$DATA_DIR" \
+        --epochs "$EPOCHS" \
+        --batch-size "$BATCH_SIZE" \
+        --lr "$LR" \
+        --device "$DEVICE" \
+        --save-dir "$SAVE_DIR" \
+        --config "$CONFIG" \
+        --enhanced-aug \
+        --physics-aware \
+        --hf-repo "$HF_REPO" \
+        $AUTO_UPLOAD \
+        --upload-hf
+fi
 
 echo ""
 echo -e "${GREEN}Training complete!${NC}"
