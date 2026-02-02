@@ -35,7 +35,7 @@ else
 fi
 
 # Default parameters
-DATA_DIR="${DATA_DIR:-./data/greatest_hits}"
+DATA_DIR="${DATA_DIR:-/workspace/vis-data}"
 EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 LR="${LR:-1e-4}"
