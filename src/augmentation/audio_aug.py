@@ -519,8 +519,8 @@ class EnhancedAudioAugmentation:
         Apply enhanced audio augmentation.
         
         Args:
-            waveform: [samples] or [C, samples] audio waveform
-            spectrogram: Optional [F, T] or [C, F, T] spectrogram
+            waveform: [samples], [C, samples], or batched [B, samples]/[B, C, samples]
+            spectrogram: Optional [F, T], [C, F, T], or batched
             use_spec_augment: Apply SpecAugment to spectrogram
             use_pitch_shift: Apply pitch shifting
             use_reverb: Apply room reverb
@@ -533,6 +533,48 @@ class EnhancedAudioAugmentation:
         if random.random() > self.p:
             return waveform, spectrogram
         
+        # Handle batched input [B, samples] or [B, C, samples]
+        batched = waveform.dim() >= 2 and waveform.shape[0] > 2  # Assume batch if first dim > 2 (not just stereo)
+        if waveform.dim() == 3:  # [B, C, samples] - definitely batched
+            batched = True
+        elif waveform.dim() == 2 and waveform.shape[0] > 2:  # [B, samples] likely batched
+            batched = True
+        else:
+            batched = False
+        
+        if batched:
+            # Process each sample in batch
+            B = waveform.shape[0]
+            augmented = []
+            for i in range(B):
+                aug_wav = self._augment_single(
+                    waveform[i], use_pitch_shift, use_reverb, use_background, use_time_stretch
+                )
+                augmented.append(aug_wav)
+            waveform = torch.stack(augmented)
+            
+            # Handle batched spectrogram
+            if spectrogram is not None and use_spec_augment:
+                aug_specs = []
+                for i in range(B):
+                    aug_specs.append(self.spec_augment(spectrogram[i]))
+                spectrogram = torch.stack(aug_specs)
+            
+            return waveform, spectrogram
+        
+        return self._augment_single(
+            waveform, use_pitch_shift, use_reverb, use_background, use_time_stretch
+        ), (self.spec_augment(spectrogram) if spectrogram is not None and use_spec_augment else spectrogram)
+    
+    def _augment_single(
+        self,
+        waveform: torch.Tensor,
+        use_pitch_shift: bool,
+        use_reverb: bool,
+        use_background: bool,
+        use_time_stretch: bool,
+    ) -> torch.Tensor:
+        """Apply augmentation to a single waveform."""
         # Basic augmentations
         waveform = self._basic_augment(waveform)
         
@@ -552,11 +594,7 @@ class EnhancedAudioAugmentation:
         if use_background and random.random() < self.config.background_prob:
             waveform = self.background_mix(waveform)
         
-        # SpecAugment (if spectrogram provided)
-        if spectrogram is not None and use_spec_augment:
-            spectrogram = self.spec_augment(spectrogram)
-        
-        return waveform, spectrogram
+        return waveform
     
     def _basic_augment(self, waveform: torch.Tensor) -> torch.Tensor:
         """Apply basic augmentations."""

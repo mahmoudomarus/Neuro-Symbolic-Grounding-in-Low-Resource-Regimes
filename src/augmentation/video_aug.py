@@ -571,7 +571,7 @@ class EnhancedVideoAugmentation:
         Apply enhanced video augmentation.
         
         Args:
-            frames: Primary video [T, C, H, W]
+            frames: Primary video [T, C, H, W] or batched [B, T, C, H, W]
             frames2: Optional second video for mixing
             label: Optional label for primary
             label2: Optional label for second
@@ -585,6 +585,36 @@ class EnhancedVideoAugmentation:
         if random.random() > self.p:
             return frames, label, 1.0
         
+        # Handle batched input [B, T, C, H, W]
+        batched = frames.dim() == 5
+        if batched:
+            # Process each sample in batch separately
+            B = frames.shape[0]
+            augmented = []
+            for i in range(B):
+                aug_frame, _, _ = self._augment_single(
+                    frames[i], None, None, None,
+                    use_rand_augment, use_temporal, False  # No mixing for batched
+                )
+                augmented.append(aug_frame)
+            return torch.stack(augmented), label, 1.0
+        
+        return self._augment_single(
+            frames, frames2, label, label2,
+            use_rand_augment, use_temporal, use_mix
+        )
+    
+    def _augment_single(
+        self,
+        frames: torch.Tensor,
+        frames2: Optional[torch.Tensor],
+        label: Optional[torch.Tensor],
+        label2: Optional[torch.Tensor],
+        use_rand_augment: bool,
+        use_temporal: bool,
+        use_mix: bool,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], float]:
+        """Apply augmentation to a single video [T, C, H, W]."""
         mix_lambda = 1.0
         mixed_label = label
         
@@ -618,7 +648,9 @@ class EnhancedVideoAugmentation:
         return frames, mixed_label, mix_lambda
     
     def _basic_augment(self, frames: torch.Tensor) -> torch.Tensor:
-        """Apply basic augmentations."""
+        """Apply basic augmentations to [T, C, H, W] tensor."""
+        T, C, H, W = frames.shape
+        
         # Horizontal flip (always allowed)
         if random.random() < self.config.horizontal_flip_p:
             frames = torch.flip(frames, dims=[3])
@@ -638,7 +670,6 @@ class EnhancedVideoAugmentation:
         
         # Random crop and resize
         if random.random() < self.config.crop_p:
-            T, C, H, W = frames.shape
             crop_scale = random.uniform(*self.config.crop_scale)
             crop_size = int(H * crop_scale)
             top = random.randint(0, H - crop_size)
