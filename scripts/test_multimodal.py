@@ -215,10 +215,11 @@ def test_feature_quality(model, dataloader, device):
         print("  Features are diverse (good!)")
     
     # Check cross-modal correlation
-    # Flatten and compute correlation
+    # Flatten and compute correlation (use min size)
     v_flat = vision.flatten()
-    a_flat = audio.flatten()[:len(v_flat)]
-    correlation = torch.corrcoef(torch.stack([v_flat, a_flat]))[0, 1].item()
+    a_flat = audio.flatten()
+    min_len = min(len(v_flat), len(a_flat))
+    correlation = torch.corrcoef(torch.stack([v_flat[:min_len], a_flat[:min_len]]))[0, 1].item()
     print(f"\nCross-modal correlation: {correlation:.4f}")
 
 
