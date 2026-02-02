@@ -86,39 +86,44 @@ class GreatestHitsDataset(Dataset):
         """Find all video-audio pairs."""
         samples = []
         
-        # Greatest Hits structure: vis_data/video_name/
-        vis_dir = self.data_dir / 'vis'
-        if not vis_dir.exists():
-            vis_dir = self.data_dir  # Try root
+        # Greatest Hits flat structure:
+        # {timestamp}_denoised.mp4 - main video
+        # {timestamp}_denoised.wav - main audio  
+        # {timestamp}_times.txt - impact timestamps
         
-        for video_dir in vis_dir.iterdir():
-            if not video_dir.is_dir():
+        # Find all denoised videos (main videos, not thumbnails or mic)
+        video_files = list(self.data_dir.glob('*_denoised.mp4'))
+        
+        print(f"Found {len(video_files)} denoised videos in {self.data_dir}")
+        
+        for video_path in video_files:
+            # Get base name (timestamp)
+            base_name = video_path.stem.replace('_denoised', '')
+            
+            # Find corresponding audio
+            audio_path = self.data_dir / f"{base_name}_denoised.wav"
+            if not audio_path.exists():
+                # Try mic audio
+                audio_path = self.data_dir / f"{base_name}_mic.wav"
+            if not audio_path.exists():
+                # Skip if no audio
                 continue
             
-            # Find video file
-            video_files = list(video_dir.glob('*.mp4')) + list(video_dir.glob('*.avi'))
-            if not video_files:
-                continue
-            video_path = video_files[0]
+            # Find timestamps file (contains impact times)
+            times_path = self.data_dir / f"{base_name}_times.txt"
             
-            # Find audio file
-            audio_files = list(video_dir.glob('*.wav')) + list(video_dir.glob('*.mp3'))
-            if not audio_files:
-                # Try to extract from video
-                audio_path = video_path  # Will extract audio from video
-            else:
-                audio_path = audio_files[0]
-            
-            # Try to get material from folder name or metadata
-            material = self._guess_material(video_dir.name)
+            # Material is unknown for this dataset - we'll learn it
+            material = 'unknown'
             
             samples.append({
                 'video_path': str(video_path),
                 'audio_path': str(audio_path),
+                'times_path': str(times_path) if times_path.exists() else None,
                 'material': material,
-                'name': video_dir.name,
+                'name': base_name,
             })
         
+        print(f"Found {len(samples)} valid video-audio pairs")
         return samples
     
     def _guess_material(self, name: str) -> str:
@@ -129,18 +134,23 @@ class GreatestHitsDataset(Dataset):
                 return material
         return 'unknown'
     
-    def _load_video_frames(self, video_path: str) -> torch.Tensor:
-        """Load frames from video around middle (impact moment)."""
+    def _load_video_frames(self, video_path: str, impact_time: float = None) -> torch.Tensor:
+        """Load frames from video around impact moment."""
         try:
             cap = cv2.VideoCapture(video_path)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS)
             
-            if total_frames == 0:
-                raise ValueError("Empty video")
+            if total_frames == 0 or fps == 0:
+                raise ValueError("Empty video or invalid FPS")
             
-            # Get frames around the middle (impact usually happens there)
-            mid_frame = total_frames // 2
+            # Get frame at impact time, or middle if not specified
+            if impact_time is not None and fps > 0:
+                mid_frame = int(impact_time * fps)
+            else:
+                mid_frame = total_frames // 2
+            
+            mid_frame = min(mid_frame, total_frames - 1)
             start_frame = max(0, mid_frame - self.n_frames // 2)
             
             frames = []
@@ -178,28 +188,30 @@ class GreatestHitsDataset(Dataset):
             print(f"Error loading video {video_path}: {e}")
             return torch.zeros(self.n_frames, 3, self.frame_size, self.frame_size)
     
-    def _load_audio(self, audio_path: str) -> torch.Tensor:
-        """Load audio waveform."""
+    def _load_audio(self, audio_path: str, impact_time: float = None) -> torch.Tensor:
+        """Load audio waveform around impact moment."""
         try:
-            # Check if it's a video file (extract audio)
-            if audio_path.endswith(('.mp4', '.avi')):
-                # Use torchaudio to load from video
-                waveform, sr = torchaudio.load(audio_path)
-            else:
-                waveform, sr = torchaudio.load(audio_path)
+            # Load audio
+            waveform, sr = torchaudio.load(audio_path)
             
             # Resample if needed
             if sr != self.sample_rate:
                 resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
                 waveform = resampler(waveform)
+                sr = self.sample_rate
             
             # Convert to mono
             if waveform.shape[0] > 1:
                 waveform = waveform.mean(dim=0, keepdim=True)
             
-            # Get middle portion (around impact)
+            # Get portion around impact time, or middle if not specified
             total_samples = waveform.shape[1]
-            mid = total_samples // 2
+            if impact_time is not None:
+                mid = int(impact_time * sr)
+            else:
+                mid = total_samples // 2
+            
+            mid = min(mid, total_samples - 1)
             start = max(0, mid - self.audio_samples // 2)
             end = start + self.audio_samples
             
@@ -220,14 +232,31 @@ class GreatestHitsDataset(Dataset):
             print(f"Error loading audio {audio_path}: {e}")
             return torch.zeros(self.audio_samples)
     
+    def _load_impact_times(self, times_path: str) -> List[float]:
+        """Load impact timestamps from file."""
+        try:
+            if times_path is None:
+                return []
+            with open(times_path, 'r') as f:
+                times = [float(line.strip()) for line in f if line.strip()]
+            return times
+        except:
+            return []
+    
     def __len__(self):
         return len(self.samples)
     
     def __getitem__(self, idx):
         sample = self.samples[idx]
         
-        video_frames = self._load_video_frames(sample['video_path'])
-        audio_clip = self._load_audio(sample['audio_path'])
+        # Load impact times if available
+        impact_times = self._load_impact_times(sample.get('times_path'))
+        
+        # Pick a random impact time, or None to use middle
+        impact_time = random.choice(impact_times) if impact_times else None
+        
+        video_frames = self._load_video_frames(sample['video_path'], impact_time)
+        audio_clip = self._load_audio(sample['audio_path'], impact_time)
         
         material_idx = self.MATERIALS.index(sample['material']) if sample['material'] in self.MATERIALS else len(self.MATERIALS)
         
