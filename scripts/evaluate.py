@@ -329,6 +329,7 @@ def main():
                        help="Evaluation to run")
     parser.add_argument('--output', type=str, default='eval_results.json', help="Output file")
     parser.add_argument('--device', type=str, default='cuda', help="Device")
+    parser.add_argument('--n-seeds', type=int, default=5, help="Number of seeds for evaluation")
     args = parser.parse_args()
     
     # Load config

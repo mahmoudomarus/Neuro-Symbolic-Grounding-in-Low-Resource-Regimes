@@ -33,12 +33,27 @@ from typing import Optional
 # Check for required packages
 try:
     from datasets import load_dataset, load_dataset_builder
-    from huggingface_hub import login, HfFolder
+    from huggingface_hub import login
+    # HfFolder is deprecated in newer versions
+    try:
+        from huggingface_hub import HfFolder
+    except ImportError:
+        # Create a simple replacement
+        class HfFolder:
+            @staticmethod
+            def get_token():
+                import os
+                return os.environ.get('HF_TOKEN', None)
 except ImportError:
     print("Installing required packages...")
     os.system("pip install datasets huggingface_hub")
     from datasets import load_dataset, load_dataset_builder
-    from huggingface_hub import login, HfFolder
+    from huggingface_hub import login
+    class HfFolder:
+        @staticmethod
+        def get_token():
+            import os
+            return os.environ.get('HF_TOKEN', None)
 
 
 def get_cache_dir() -> Path:

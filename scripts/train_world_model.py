@@ -211,22 +211,69 @@ def train_vision_encoder(
     augment = SimCLRAugmentation(224)
     
     def collate_fn(batch):
-        if isinstance(batch[0], dict) and 'image' in batch[0]:
-            from PIL import Image
-            images = []
-            for item in batch:
-                img = item['image']
-                if not isinstance(img, Image.Image):
-                    img = Image.fromarray(img.numpy() if torch.is_tensor(img) else img)
-                img = img.convert('RGB')
-                images.append(img)
+        from PIL import Image
+        import numpy as np
+        
+        images = []
+        for item in batch:
+            # Handle different data formats
+            if isinstance(item, dict):
+                # HuggingFace dataset format
+                if 'image' in item:
+                    img = item['image']
+                elif 'img' in item:
+                    img = item['img']
+                else:
+                    # Try first key that might be an image
+                    for key in ['pixel_values', 'data']:
+                        if key in item:
+                            img = item[key]
+                            break
+                    else:
+                        raise ValueError(f"Cannot find image in dict with keys: {item.keys()}")
+            elif isinstance(item, (tuple, list)):
+                img = item[0]  # Assume (image, label) format
+            else:
+                img = item
             
-            view1 = torch.stack([augment(img)[0] for img in images])
-            view2 = torch.stack([augment(img)[1] for img in images])
-            return view1, view2
-        else:
-            # Already tensor
-            return batch[0], batch[1]
+            # Convert to PIL Image if needed
+            if isinstance(img, Image.Image):
+                img = img.convert('RGB')
+            elif isinstance(img, np.ndarray):
+                if img.ndim == 2:  # Grayscale
+                    img = Image.fromarray(img).convert('RGB')
+                elif img.shape[0] in [1, 3]:  # CHW format
+                    img = img.transpose(1, 2, 0)
+                    if img.shape[2] == 1:
+                        img = np.repeat(img, 3, axis=2)
+                    img = Image.fromarray(img.astype(np.uint8)).convert('RGB')
+                else:  # HWC format
+                    img = Image.fromarray(img.astype(np.uint8)).convert('RGB')
+            elif torch.is_tensor(img):
+                img = img.numpy()
+                if img.ndim == 2:
+                    img = Image.fromarray(img).convert('RGB')
+                elif img.shape[0] in [1, 3]:
+                    img = img.transpose(1, 2, 0)
+                    if img.shape[2] == 1:
+                        img = np.repeat(img, 3, axis=2)
+                    img = Image.fromarray((img * 255).astype(np.uint8)).convert('RGB')
+                else:
+                    img = Image.fromarray((img * 255).astype(np.uint8)).convert('RGB')
+            
+            images.append(img)
+        
+        # Apply augmentation and stack
+        view1_list = []
+        view2_list = []
+        for img in images:
+            v1, v2 = augment(img)
+            view1_list.append(v1)
+            view2_list.append(v2)
+        
+        view1 = torch.stack(view1_list)
+        view2 = torch.stack(view2_list)
+        return view1, view2
     
     loader = DataLoader(
         dataset,
