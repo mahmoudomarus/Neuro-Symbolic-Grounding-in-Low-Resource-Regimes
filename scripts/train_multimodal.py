@@ -298,32 +298,41 @@ class CrossModalWorldModel(nn.Module):
         # Audio encoder (with mel-spectrogram prior)
         self.audio_encoder = self._build_audio_encoder(audio_dim)
         
-        # Cross-modal predictors
+        # Cross-modal predictors with dropout
         self.vision_to_audio = nn.Sequential(
             nn.Linear(vision_dim, 256),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(256, audio_dim),
         )
         
         self.audio_to_vision = nn.Sequential(
             nn.Linear(audio_dim, 256),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(256, vision_dim),
         )
         
-        # Fusion layer
+        # Fusion layer with dropout
         self.fusion = nn.Sequential(
             nn.Linear(vision_dim + audio_dim, fusion_dim),
             nn.ReLU(),
+            nn.Dropout(0.3),
             nn.Linear(fusion_dim, fusion_dim),
         )
         
         # Material classifier (from fused representation)
         self.material_classifier = nn.Linear(fusion_dim, n_materials)
         
-        # Projection heads for contrastive learning
-        self.vision_proj = nn.Linear(vision_dim, 128)
-        self.audio_proj = nn.Linear(audio_dim, 128)
+        # Projection heads for contrastive learning with dropout
+        self.vision_proj = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(vision_dim, 128),
+        )
+        self.audio_proj = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(audio_dim, 128),
+        )
     
     def _build_vision_encoder(self, output_dim: int) -> nn.Module:
         """Build vision encoder with Gabor priors."""
@@ -592,9 +601,13 @@ def train_multimodal(
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parameters: {n_params:,}")
     
-    # Optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    # Optimizer with stronger regularization
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.1)  # Higher weight decay
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
+    
+    # Early stopping
+    patience = 10
+    patience_counter = 0
     
     # WandB logging
     try:
@@ -678,11 +691,17 @@ def train_multimodal(
                 'lr': scheduler.get_last_lr()[0],
             })
         
-        # Save best model
+        # Save best model and check early stopping
         if val_metrics['total_loss'] < best_val_loss:
             best_val_loss = val_metrics['total_loss']
             torch.save(model.state_dict(), f'{save_dir}/multimodal_best.pth')
             print(f"  Saved best model (val_loss: {best_val_loss:.4f})")
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
+                break
         
         # Save checkpoint
         if (epoch + 1) % 10 == 0:
