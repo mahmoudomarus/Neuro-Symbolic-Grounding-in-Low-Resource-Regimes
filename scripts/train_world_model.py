@@ -527,26 +527,26 @@ def train_fusion_and_temporal(
                 # Encode video frames - process frame by frame to save memory
                 B, T, C, H, W = video.shape
                 
-                # Process frames in chunks to avoid OOM
+                # Process frames in chunks to avoid OOM (no autocast, use float32)
                 vision_features_list = []
                 chunk_size = 4  # Process 4 frames at a time
                 for t in range(0, T, chunk_size):
                     t_end = min(t + chunk_size, T)
                     frames_chunk = video[:, t:t_end].reshape(-1, C, H, W)
-                    with torch.cuda.amp.autocast():
-                        chunk_features = model.vision_encoder(frames_chunk)
-                        chunk_features = chunk_features.mean(dim=(2, 3))
-                    vision_features_list.append(chunk_features.view(B, t_end - t, -1))
+                    chunk_features = model.vision_encoder(frames_chunk)
+                    chunk_features = chunk_features.mean(dim=(2, 3))
+                    vision_features_list.append(chunk_features.view(B, t_end - t, -1).detach())
+                    del frames_chunk, chunk_features
                 
                 vision_features = torch.cat(vision_features_list, dim=1)  # [B, T, D]
+                vision_features.requires_grad_(True)
                 
                 # Encode audio
-                with torch.cuda.amp.autocast():
-                    audio_features = model.audio_encoder(audio)
+                audio_features = model.audio_encoder(audio)
                 
-                # Contrastive loss between video and audio (skip fusion for memory)
-                video_proj = F.normalize(vision_features.mean(dim=1), dim=1)
-                audio_proj = F.normalize(audio_features, dim=1)
+                # Contrastive loss between video and audio
+                video_proj = F.normalize(vision_features.mean(dim=1).float(), dim=1)
+                audio_proj = F.normalize(audio_features.float(), dim=1)
                 
                 logits = torch.matmul(video_proj, audio_proj.T) / 0.07
                 labels = torch.arange(B, device=device)
@@ -598,18 +598,16 @@ def train_fusion_and_temporal(
                     for t in range(0, T, chunk_size):
                         t_end = min(t + chunk_size, T)
                         frames_chunk = video[:, t:t_end].reshape(-1, C, H, W)
-                        with torch.cuda.amp.autocast():
-                            chunk_features = model.vision_encoder(frames_chunk)
-                            chunk_features = chunk_features.mean(dim=(2, 3))
+                        chunk_features = model.vision_encoder(frames_chunk)
+                        chunk_features = chunk_features.mean(dim=(2, 3))
                         vision_features_list.append(chunk_features.view(B, t_end - t, -1))
+                        del frames_chunk, chunk_features
                     
                     vision_features = torch.cat(vision_features_list, dim=1)
+                    audio_features = model.audio_encoder(audio)
                     
-                    with torch.cuda.amp.autocast():
-                        audio_features = model.audio_encoder(audio)
-                    
-                    video_proj = F.normalize(vision_features.mean(dim=1), dim=1)
-                    audio_proj = F.normalize(audio_features, dim=1)
+                    video_proj = F.normalize(vision_features.mean(dim=1).float(), dim=1)
+                    audio_proj = F.normalize(audio_features.float(), dim=1)
                     
                     logits = torch.matmul(video_proj, audio_proj.T) / 0.07
                     labels = torch.arange(B, device=device)
