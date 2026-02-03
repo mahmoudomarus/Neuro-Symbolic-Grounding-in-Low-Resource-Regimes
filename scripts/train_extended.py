@@ -278,17 +278,17 @@ def main():
     print(f"\nLoading data from: {args.data_dir}")
     
     train_dataset = GreatestHitsDataset(
-        root_dir=args.data_dir,
+        data_dir=args.data_dir,
         split='train',
-        video_frames=8,
+        n_frames=8,
         audio_duration=1.0,
         augment=True
     )
     
     val_dataset = GreatestHitsDataset(
-        root_dir=args.data_dir,
+        data_dir=args.data_dir,
         split='val',
-        video_frames=8,
+        n_frames=8,
         audio_duration=1.0,
         augment=False
     )

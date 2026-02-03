@@ -61,9 +61,9 @@ def evaluate_cross_modal_real_data(
     
     # Load real data
     dataset = GreatestHitsDataset(
-        root_dir=data_dir,
+        data_dir=data_dir,
         split='val',
-        video_frames=8,
+        n_frames=8,
         audio_duration=1.0,
         augment=False
     )
@@ -220,9 +220,9 @@ def test_full_pipeline(
     
     # Load one real sample
     dataset = GreatestHitsDataset(
-        root_dir=data_dir,
+        data_dir=data_dir,
         split='val',
-        video_frames=8,
+        n_frames=8,
         audio_duration=1.0,
         augment=False
     )
