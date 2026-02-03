@@ -34,9 +34,14 @@ def load_model(checkpoint_path: str, config: Dict, device: torch.device) -> Unif
     model = UnifiedWorldModel(model_config).to(device)
     
     if checkpoint_path and Path(checkpoint_path).exists():
-        state_dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        model.load_state_dict(state_dict)
-        print(f"Loaded checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+        # Handle both formats: direct state_dict or dict with 'model_state_dict' key
+        if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+            print(f"Loaded checkpoint: {checkpoint_path} (epoch {checkpoint.get('epoch', '?')})")
+        else:
+            model.load_state_dict(checkpoint)
+            print(f"Loaded checkpoint: {checkpoint_path}")
     else:
         print("No checkpoint found, using random initialization")
     
