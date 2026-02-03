@@ -28,7 +28,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.world_model.unified_world_model import UnifiedWorldModel, WorldModelConfig
-from src.data.greatest_hits import GreatestHitsDataset
+from train_multimodal import GreatestHitsDataset
 
 try:
     import wandb

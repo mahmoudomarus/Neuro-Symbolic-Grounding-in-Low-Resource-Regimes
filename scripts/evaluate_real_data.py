@@ -53,7 +53,7 @@ def evaluate_cross_modal_real_data(
     """
     Evaluate cross-modal retrieval with REAL paired video-audio data.
     """
-    from src.data.greatest_hits import GreatestHitsDataset
+    from train_multimodal import GreatestHitsDataset
     
     print("\n" + "=" * 60)
     print("CROSS-MODAL RETRIEVAL WITH REAL DATA")
@@ -212,7 +212,7 @@ def test_full_pipeline(
     """
     Test the full perception -> understanding -> language pipeline.
     """
-    from src.data.greatest_hits import GreatestHitsDataset
+    from train_multimodal import GreatestHitsDataset
     
     print("\n" + "=" * 60)
     print("FULL PIPELINE TEST: Perception -> Understanding -> Language")
