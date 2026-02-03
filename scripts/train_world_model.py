@@ -460,60 +460,151 @@ def train_fusion_and_temporal(
     config: Dict[str, Any],
     device: torch.device,
     wandb_logger: Optional[Any] = None,
+    data_dir: Optional[str] = None,
 ) -> None:
     """
     Phase 3 & 4: Train fusion and temporal model on multi-modal data.
+    Uses real Greatest Hits data if data_dir is provided.
     """
     print("=" * 60)
     print("PHASE 3-4: Training Fusion & Temporal Model")
     print("=" * 60)
     
-    # Freeze encoders
-    for param in model.vision_encoder.parameters():
-        param.requires_grad = False
-    for param in model.audio_encoder.parameters():
-        param.requires_grad = False
-    
     train_config = config['training']['fusion']
+    epochs = train_config.get('epochs', 50)
+    batch_size = train_config.get('batch_size', 16)
+    lr = train_config.get('learning_rate', 1e-4)
     
-    # Parameters to train
-    params = (
-        list(model.fusion.parameters()) +
-        list(model.temporal_model.parameters()) +
-        list(model.dynamics.parameters())
-    )
+    # Try to load real data from Greatest Hits
+    use_real_data = False
+    if data_dir and Path(data_dir).exists():
+        try:
+            # Import the dataset from train_multimodal
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent))
+            from train_multimodal import GreatestHitsDataset
+            
+            print(f"Loading REAL data from: {data_dir}")
+            train_dataset = GreatestHitsDataset(data_dir, split='train', augment=True)
+            val_dataset = GreatestHitsDataset(data_dir, split='val', augment=False)
+            
+            train_loader = DataLoader(
+                train_dataset, batch_size=batch_size, shuffle=True, 
+                num_workers=4, pin_memory=True
+            )
+            val_loader = DataLoader(
+                val_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+            )
+            print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+            use_real_data = True
+        except Exception as e:
+            print(f"Failed to load real data: {e}")
+            print("Falling back to synthetic data...")
     
-    optimizer = torch.optim.AdamW(
-        params,
-        lr=train_config['learning_rate'],
-        weight_decay=train_config['weight_decay'],
-    )
+    if not use_real_data:
+        print("WARNING: Using synthetic data - provide --data-dir for real training!")
     
-    print("Note: Using synthetic multi-modal data for structure verification")
-    print("Replace with real video dataset (WebVid, etc.) for actual training")
+    # Train all parameters (not just fusion) for end-to-end training
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     
-    # Dummy multi-modal data
-    batch_size = train_config['batch_size']
-    seq_len = 16
+    best_val_loss = float('inf')
     
-    for epoch in range(min(train_config['epochs'], 5)):  # Limited for demo
-        # Generate dummy batch
-        vision = torch.randn(batch_size, seq_len, 512, device=device)  # Already encoded
-        audio = torch.randn(batch_size, 512, device=device)
-        proprio = torch.randn(batch_size, seq_len, 512, device=device)
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0
+        num_batches = 0
         
-        # Forward pass
-        results = model.forward(vision, audio, proprio)
+        if use_real_data:
+            for batch in train_loader:
+                video = batch['video'].to(device)
+                audio = batch['audio'].to(device)
+                
+                optimizer.zero_grad()
+                
+                # Encode video frames
+                B, T, C, H, W = video.shape
+                video_flat = video.view(B * T, C, H, W)
+                vision_features = model.vision_encoder(video_flat)
+                vision_features = vision_features.mean(dim=(2, 3))  # Global pool
+                vision_features = vision_features.view(B, T, -1)
+                
+                # Encode audio
+                audio_features = model.audio_encoder(audio)
+                
+                # Fuse modalities
+                fused = model.fusion(
+                    vision=vision_features,
+                    audio=audio_features.unsqueeze(1).expand(-1, T, -1),
+                    proprio=None
+                )
+                
+                # Contrastive loss between video and audio
+                video_proj = F.normalize(vision_features.mean(dim=1), dim=1)
+                audio_proj = F.normalize(audio_features, dim=1)
+                
+                logits = torch.matmul(video_proj, audio_proj.T) / 0.07
+                labels = torch.arange(B, device=device)
+                loss = F.cross_entropy(logits, labels)
+                
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                
+                epoch_loss += loss.item()
+                num_batches += 1
+        else:
+            # Synthetic data fallback
+            for _ in range(50):
+                vision = torch.randn(batch_size, 16, 512, device=device)
+                audio = torch.randn(batch_size, 512, device=device)
+                
+                fused = model.fusion(vision=vision, audio=audio.unsqueeze(1).expand(-1, 16, -1))
+                loss = fused['fused'].pow(2).mean() if isinstance(fused, dict) else fused.pow(2).mean()
+                
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                epoch_loss += loss.item()
+                num_batches += 1
         
-        # Dummy loss (would be prediction loss in real training)
-        world_state = results['world_state']
-        loss = world_state.pow(2).mean()  # Placeholder
+        scheduler.step()
+        avg_loss = epoch_loss / max(num_batches, 1)
         
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # Validation
+        val_loss = 0
+        if use_real_data:
+            model.eval()
+            with torch.no_grad():
+                for batch in val_loader:
+                    video = batch['video'].to(device)
+                    audio = batch['audio'].to(device)
+                    
+                    B, T, C, H, W = video.shape
+                    video_flat = video.view(B * T, C, H, W)
+                    vision_features = model.vision_encoder(video_flat)
+                    vision_features = vision_features.mean(dim=(2, 3)).view(B, T, -1)
+                    audio_features = model.audio_encoder(audio)
+                    
+                    video_proj = F.normalize(vision_features.mean(dim=1), dim=1)
+                    audio_proj = F.normalize(audio_features, dim=1)
+                    
+                    logits = torch.matmul(video_proj, audio_proj.T) / 0.07
+                    labels = torch.arange(B, device=device)
+                    val_loss += F.cross_entropy(logits, labels).item()
+            
+            val_loss /= len(val_loader)
         
-        print(f"Epoch {epoch + 1} | Loss: {loss.item():.4f}")
+        print(f"Epoch {epoch + 1}/{epochs} | Train Loss: {avg_loss:.4f}" + 
+              (f" | Val Loss: {val_loss:.4f}" if use_real_data else ""))
+        
+        # Save best model
+        if use_real_data and val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), 
+                      Path(config['data']['checkpoint_dir']) / "fusion_best.pth")
+            print(f"  Saved best model (val_loss: {val_loss:.4f})")
 
 
 def main():
@@ -524,6 +615,8 @@ def main():
                        help="Training phase to run")
     parser.add_argument('--resume', type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument('--device', type=str, default='cuda', help="Device (cuda/cpu)")
+    parser.add_argument('--data-dir', type=str, default=None, 
+                       help="Path to real training data (e.g., /workspace/vis-data)")
     args = parser.parse_args()
     
     # Load config
@@ -571,7 +664,7 @@ def main():
         train_audio_encoder(model, config, device, wandb_logger)
     
     if args.phase in ('all', 'fusion', 'temporal'):
-        train_fusion_and_temporal(model, config, device, wandb_logger)
+        train_fusion_and_temporal(model, config, device, wandb_logger, args.data_dir)
     
     # Save final model
     final_path = Path(config['data']['checkpoint_dir']) / "world_model_final.pth"

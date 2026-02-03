@@ -162,7 +162,7 @@ def phase_3_audio(config_path: str) -> bool:
     return True
 
 
-def phase_4_fusion(config_path: str, resume: Optional[str] = None) -> bool:
+def phase_4_fusion(config_path: str, resume: Optional[str] = None, data_dir: Optional[str] = None) -> bool:
     """Train cross-modal fusion."""
     print("\n" + "="*70)
     print("PHASE 4: CROSS-MODAL FUSION (~$30, 8 hours)")
@@ -175,10 +175,14 @@ def phase_4_fusion(config_path: str, resume: Optional[str] = None) -> bool:
     if resume:
         cmd.extend(["--resume", resume])
     
+    if data_dir:
+        cmd.extend(["--data-dir", data_dir])
+        print(f"Using REAL data from: {data_dir}")
+    
     return run_command(cmd, "Cross-Modal Fusion Training")
 
 
-def phase_5_temporal(config_path: str, resume: Optional[str] = None) -> bool:
+def phase_5_temporal(config_path: str, resume: Optional[str] = None, data_dir: Optional[str] = None) -> bool:
     """Train temporal model and dynamics."""
     print("\n" + "="*70)
     print("PHASE 5: TEMPORAL MODEL + DYNAMICS (~$30, 8 hours)")
@@ -190,6 +194,9 @@ def phase_5_temporal(config_path: str, resume: Optional[str] = None) -> bool:
     
     if resume:
         cmd.extend(["--resume", resume])
+    
+    if data_dir:
+        cmd.extend(["--data-dir", data_dir])
     
     return run_command(cmd, "Temporal Model Training")
 
@@ -225,6 +232,8 @@ def main():
                        help='Number of seeds for ablation study')
     parser.add_argument('--babbling-steps', type=int, default=100000,
                        help='Total babbling interaction steps')
+    parser.add_argument('--data-dir', type=str, default='/workspace/vis-data',
+                       help='Path to real training data (Greatest Hits)')
     args = parser.parse_args()
     
     # Banner
@@ -234,6 +243,11 @@ def main():
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Config: {args.config}")
     print(f"Start phase: {args.start_phase}")
+    print(f"Data directory: {args.data_dir}")
+    if Path(args.data_dir).exists():
+        print("✓ REAL DATA WILL BE USED!")
+    else:
+        print("⚠ WARNING: Data directory not found, synthetic data will be used!")
     
     # Check GPU
     check_gpu()
@@ -272,16 +286,16 @@ def main():
         phase_3_audio(args.config)
         phase_times['audio'] = time.time() - t0
     
-    # Phase 4: Fusion
+    # Phase 4: Fusion (with real data!)
     if args.start_phase <= 4:
         t0 = time.time()
-        phase_4_fusion(args.config)
+        phase_4_fusion(args.config, data_dir=args.data_dir)
         phase_times['fusion'] = time.time() - t0
     
-    # Phase 5: Temporal
+    # Phase 5: Temporal (with real data!)
     if args.start_phase <= 5:
         t0 = time.time()
-        phase_5_temporal(args.config)
+        phase_5_temporal(args.config, data_dir=args.data_dir)
         phase_times['temporal'] = time.time() - t0
     
     # Phase 6: Evaluation
