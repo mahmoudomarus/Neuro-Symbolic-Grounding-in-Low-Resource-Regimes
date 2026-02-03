@@ -145,11 +145,18 @@ def evaluate_cross_modal_retrieval(
     proprio_features = torch.randn(num_samples, 1, 512, device=device)
     
     with torch.no_grad():
-        # Fuse modalities
-        fused, _ = model.fusion(vision_features, audio_features.unsqueeze(1), proprio_features)
+        # Use encode_multimodal which handles fusion properly
+        fused_seq, _ = model.encode_multimodal(
+            vision_features, 
+            audio_features.unsqueeze(1), 
+            proprio_features
+        )
         
-        # Extract modality-specific representations
-        vision_repr = fused[:, 0, :]  # First token is vision
+        # Extract vision representation (mean pool if sequence)
+        if fused_seq.dim() == 3:
+            vision_repr = fused_seq.mean(dim=1)  # [B, D]
+        else:
+            vision_repr = fused_seq
         
     # Audio -> Video retrieval
     # (In real evaluation, would use actual paired data)
