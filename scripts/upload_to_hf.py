@@ -3,14 +3,20 @@
 
 import os
 import glob
-from huggingface_hub import HfApi, create_repo
+from huggingface_hub import HfApi, create_repo, whoami
 
 # Set your HuggingFace token
 HF_TOKEN = os.environ.get("HF_TOKEN")
-REPO_ID = "mahmoudomarus/nsca-world-model"  # Change to your username/repo
 
 def upload_models():
     api = HfApi(token=HF_TOKEN)
+    
+    # Get username from token
+    user_info = whoami(token=HF_TOKEN)
+    username = user_info["name"]
+    REPO_ID = f"{username}/nsca-world-model"
+    print(f"Detected username: {username}")
+    print(f"Will upload to: {REPO_ID}")
     
     # Create repo if it doesn't exist
     try:
@@ -43,6 +49,7 @@ def upload_models():
             print(f"  ✗ Failed to upload {filename}: {e}")
     
     print(f"\nDone! View at: https://huggingface.co/{REPO_ID}")
+    return REPO_ID
 
 if __name__ == "__main__":
     if not HF_TOKEN:
