@@ -257,8 +257,8 @@ def test_full_pipeline(
         
         print(f"4. World state: {world_state.shape}")
         
-        # Memory storage
-        model.memory.store(world_state, fused[:, 0])
+        # Memory storage (requires dict metadata)
+        model.memory.store(world_state.squeeze(0), {'label': 'test_sample', 'source': 'video'})
         
         print(f"5. Stored in memory (episodic: {len(model.memory.episodic.memories)}, semantic: {len(model.memory.semantic.concept_prototypes)})")
     
