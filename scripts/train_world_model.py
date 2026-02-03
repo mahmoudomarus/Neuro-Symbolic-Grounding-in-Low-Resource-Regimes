@@ -472,8 +472,10 @@ def train_fusion_and_temporal(
     
     train_config = config['training']['fusion']
     epochs = train_config.get('epochs', 50)
-    batch_size = train_config.get('batch_size', 16)
+    # Use smaller batch size to avoid OOM with 88M parameter model
+    batch_size = min(train_config.get('batch_size', 16), 4)  # Max 4 for large model
     lr = train_config.get('learning_rate', 1e-4)
+    print(f"Using batch_size={batch_size} to fit in GPU memory")
     
     # Try to load real data from Greatest Hits
     use_real_data = False
@@ -522,24 +524,27 @@ def train_fusion_and_temporal(
                 
                 optimizer.zero_grad()
                 
-                # Encode video frames
+                # Encode video frames - process frame by frame to save memory
                 B, T, C, H, W = video.shape
-                video_flat = video.view(B * T, C, H, W)
-                vision_features = model.vision_encoder(video_flat)
-                vision_features = vision_features.mean(dim=(2, 3))  # Global pool
-                vision_features = vision_features.view(B, T, -1)
+                
+                # Process frames in chunks to avoid OOM
+                vision_features_list = []
+                chunk_size = 4  # Process 4 frames at a time
+                for t in range(0, T, chunk_size):
+                    t_end = min(t + chunk_size, T)
+                    frames_chunk = video[:, t:t_end].reshape(-1, C, H, W)
+                    with torch.cuda.amp.autocast():
+                        chunk_features = model.vision_encoder(frames_chunk)
+                        chunk_features = chunk_features.mean(dim=(2, 3))
+                    vision_features_list.append(chunk_features.view(B, t_end - t, -1))
+                
+                vision_features = torch.cat(vision_features_list, dim=1)  # [B, T, D]
                 
                 # Encode audio
-                audio_features = model.audio_encoder(audio)
+                with torch.cuda.amp.autocast():
+                    audio_features = model.audio_encoder(audio)
                 
-                # Fuse modalities
-                fused = model.fusion(
-                    vision=vision_features,
-                    audio=audio_features.unsqueeze(1).expand(-1, T, -1),
-                    proprio=None
-                )
-                
-                # Contrastive loss between video and audio
+                # Contrastive loss between video and audio (skip fusion for memory)
                 video_proj = F.normalize(vision_features.mean(dim=1), dim=1)
                 audio_proj = F.normalize(audio_features, dim=1)
                 
@@ -553,6 +558,10 @@ def train_fusion_and_temporal(
                 
                 epoch_loss += loss.item()
                 num_batches += 1
+                
+                # Clear cache periodically
+                if num_batches % 10 == 0:
+                    torch.cuda.empty_cache()
         else:
             # Synthetic data fallback
             for _ in range(50):
@@ -582,10 +591,22 @@ def train_fusion_and_temporal(
                     audio = batch['audio'].to(device)
                     
                     B, T, C, H, W = video.shape
-                    video_flat = video.view(B * T, C, H, W)
-                    vision_features = model.vision_encoder(video_flat)
-                    vision_features = vision_features.mean(dim=(2, 3)).view(B, T, -1)
-                    audio_features = model.audio_encoder(audio)
+                    
+                    # Process frames in chunks
+                    vision_features_list = []
+                    chunk_size = 4
+                    for t in range(0, T, chunk_size):
+                        t_end = min(t + chunk_size, T)
+                        frames_chunk = video[:, t:t_end].reshape(-1, C, H, W)
+                        with torch.cuda.amp.autocast():
+                            chunk_features = model.vision_encoder(frames_chunk)
+                            chunk_features = chunk_features.mean(dim=(2, 3))
+                        vision_features_list.append(chunk_features.view(B, t_end - t, -1))
+                    
+                    vision_features = torch.cat(vision_features_list, dim=1)
+                    
+                    with torch.cuda.amp.autocast():
+                        audio_features = model.audio_encoder(audio)
                     
                     video_proj = F.normalize(vision_features.mean(dim=1), dim=1)
                     audio_proj = F.normalize(audio_features, dim=1)
@@ -593,6 +614,8 @@ def train_fusion_and_temporal(
                     logits = torch.matmul(video_proj, audio_proj.T) / 0.07
                     labels = torch.arange(B, device=device)
                     val_loss += F.cross_entropy(logits, labels).item()
+                
+                torch.cuda.empty_cache()
             
             val_loss /= len(val_loader)
         
