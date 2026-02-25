@@ -1,0 +1,227 @@
+# Training configuration for RTX 3050 (6 GB VRAM)
+# Same as training_config.yaml but with batch sizes and datasets tuned for 6GB
+# Usage: python scripts/train_world_model.py --config configs/training_config_local.yaml
+
+# Reproducibility
+seed: 42
+
+# Model configuration (unchanged - same architecture)
+model:
+  latent_dim: 512
+  state_dim: 256
+  action_dim: 32
+  use_enhanced_fusion: true
+  
+  vision:
+    input_height: 224
+    input_width: 224
+    input_channels: 3
+    latent_dim: 512
+    num_gabor_orientations: 8
+    num_gabor_scales: 4
+    gabor_kernel_size: 15
+    use_spatial_prior: true
+    use_color_prior: true
+    use_gabor_prior: true
+    use_depth_prior: true
+    
+  audio:
+    sample_rate: 16000
+    n_mels: 80
+    n_fft: 400
+    hop_length: 160
+    latent_dim: 256
+    output_dim: 512
+    use_onset_prior: true
+    
+  proprio:
+    input_dim: 12
+    hidden_dim: 128
+    output_dim: 512
+    num_layers: 3
+    dropout: 0.1
+    
+  fusion:
+    dim: 512
+    num_heads: 8
+    num_layers: 4
+    dropout: 0.1
+    fusion_type: "hierarchical"
+    use_contrastive: true
+    contrastive_temperature: 0.07
+    contrastive_dim: 256
+    use_temporal_sync: true
+    max_temporal_length: 100
+    use_cross_modal_prediction: true
+    early_weight: 0.3
+    mid_weight: 0.4
+    late_weight: 0.3
+    
+  temporal:
+    dim: 512
+    num_heads: 8
+    num_layers: 6
+    max_seq_len: 64
+    state_dim: 256
+    dropout: 0.1
+    use_causal: true
+    
+  dynamics:
+    state_dim: 256
+    action_dim: 32
+    hidden_dim: 512
+    num_layers: 3
+    dropout: 0.1
+    use_residual: true
+    predict_uncertainty: true
+
+# Training phases - REDUCED for 6GB VRAM
+training:
+  vision:
+    epochs: 100
+    batch_size: 32
+    learning_rate: 0.0003
+    weight_decay: 0.01
+    warmup_epochs: 10
+    temperature: 0.5
+    augmentation:
+      random_resized_crop: 224
+      horizontal_flip: true
+      color_jitter: [0.4, 0.4, 0.4, 0.1]
+      random_grayscale: 0.2
+  
+  audio:
+    epochs: 50
+    batch_size: 16
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    warmup_epochs: 5
+    max_audio_length: 48000  # 3 seconds at 16kHz (shorter for memory)
+    augmentation:
+      time_stretch: [0.8, 1.2]
+      pitch_shift: [-2, 2]
+      add_noise: 0.1
+  
+  fusion:
+    epochs: 50
+    batch_size: 8
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    warmup_epochs: 5
+    freeze_encoders: true
+  
+  temporal:
+    epochs: 50
+    batch_size: 4
+    learning_rate: 0.0001
+    weight_decay: 0.01
+    warmup_epochs: 5
+    sequence_length: 16
+    prediction_horizon: 4
+    
+  general:
+    gradient_accumulation_steps: 8
+    mixed_precision: true
+    gradient_clip: 1.0
+    save_every_n_epochs: 10
+    eval_every_n_epochs: 5
+    log_every_n_steps: 50
+    num_workers: 4
+    pin_memory: true
+
+# Data - use small datasets (CIFAR, SpeechCommands) for RTX 3050
+data:
+  small_vision_dataset: "cifar100"
+  small_audio_dataset: "speech_commands"
+  cache_dir: "./data/huggingface_cache"
+  checkpoint_dir: "./checkpoints"
+  log_dir: "./logs"
+
+# Rest from base config
+loss:
+  contrastive_weight: 1.0
+  variance_weight: 25.0
+  invariance_weight: 25.0
+  covariance_weight: 1.0
+  prediction_weight: 1.0
+  uncertainty_weight: 0.1
+  alignment_weight: 1.0
+
+optimizer:
+  name: "adamw"
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+scheduler:
+  name: "cosine"
+  min_lr: 1.0e-6
+  warmup_type: "linear"
+
+# Disable wandb by default for local runs
+logging:
+  use_wandb: false
+  wandb_project: "nsca-world-model"
+  wandb_entity: null
+  log_images: false
+  log_attention: false
+
+checkpoint:
+  save_best: true
+  save_last: true
+  metric: "loss"
+  mode: "min"
+
+augmentation:
+  enabled: true
+  probability: 0.5
+  physics_aware: true
+  synchronized: true
+  vision:
+    rand_augment: { n: 2, m: 9 }
+    mixup_alpha: 0.2
+    cutmix_alpha: 1.0
+    mix_prob: 0.5
+    temporal_dropout: 0.1
+    speed_range: [0.8, 1.2]
+    horizontal_flip_p: 0.5
+    brightness_range: [0.8, 1.2]
+    contrast_range: [0.8, 1.2]
+    crop_scale: [0.85, 1.0]
+    color_jitter_p: 0.8
+    color_jitter_brightness: 0.4
+    color_jitter_contrast: 0.4
+    color_jitter_saturation: 0.4
+    color_jitter_hue: 0.1
+    grayscale_p: 0.2
+  audio:
+    sample_rate: 16000
+    spec_augment:
+      freq_mask: 27
+      time_mask: 100
+      num_freq_masks: 2
+      num_time_masks: 2
+    pitch_shift: [-4, 4]
+    time_stretch: [0.8, 1.2]
+    volume_range: [0.8, 1.2]
+    noise_std: 0.005
+    time_shift_samples: 1000
+  proprio:
+    noise_std: 0.01
+    noise_type: "gaussian"
+    joint_dropout: 0.1
+    min_joints_kept: 6
+
+cross_modal:
+  fusion_type: "hierarchical"
+  contrastive_weight: 0.3
+  temperature: 0.07
+  prediction_weight: 0.25
+  physics_weight: 0.2
+  reconstruction_weight: 0.15
+  classification_weight: 0.1
+
+huggingface:
+  repo_id: "omartabius/NSCA"
+  auto_upload: false
+  upload_frequency: "best"
+  update_model_card: true

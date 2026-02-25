@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import sys
 import time
 from datetime import datetime
@@ -301,7 +302,7 @@ def train_vision_encoder(
     )
     
     # Mixed precision
-    scaler = torch.cuda.amp.GradScaler() if config['training']['general']['mixed_precision'] else None
+    scaler = torch.amp.GradScaler('cuda') if config['training']['general']['mixed_precision'] else None
     
     # Training loop
     model.vision_encoder.train()
@@ -314,7 +315,7 @@ def train_vision_encoder(
         for batch_idx, (view1, view2) in enumerate(loader):
             view1, view2 = view1.to(device), view2.to(device)
             
-            with torch.cuda.amp.autocast(enabled=scaler is not None):
+            with torch.amp.autocast('cuda', enabled=scaler is not None):
                 # Encode both views
                 z1 = model.vision_encoder(view1)
                 z2 = model.vision_encoder(view2)
@@ -372,6 +373,156 @@ def train_vision_encoder(
             print(f"Saved checkpoint: {checkpoint_path}")
 
 
+class AudioAugment:
+    """Audio augmentation for contrastive learning (two views of same clip)."""
+    
+    def __init__(self, sample_rate: int = 16000, max_len: int = 48000):
+        self.sample_rate = sample_rate
+        self.max_len = max_len
+    
+    def __call__(self, waveform: torch.Tensor) -> tuple:
+        """Return two augmented views for contrastive learning."""
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+        
+        # Ensure consistent length
+        if waveform.shape[-1] > self.max_len:
+            start = random.randint(0, waveform.shape[-1] - self.max_len)
+            waveform = waveform[..., start:start + self.max_len]
+        elif waveform.shape[-1] < self.max_len:
+            pad = self.max_len - waveform.shape[-1]
+            waveform = F.pad(waveform, (0, pad))
+        
+        waveform = waveform.squeeze(0)
+        
+        # View 1: time stretch (0.8-1.2x) via resample
+        stretch = random.uniform(0.9, 1.1)
+        new_len = int(waveform.shape[-1] * stretch)
+        view1 = F.interpolate(
+            waveform.unsqueeze(0).unsqueeze(0),
+            size=new_len,
+            mode='linear',
+            align_corners=False,
+        ).squeeze()
+        if view1.shape[-1] > self.max_len:
+            view1 = view1[..., :self.max_len]
+        elif view1.shape[-1] < self.max_len:
+            view1 = F.pad(view1, (0, self.max_len - view1.shape[-1]))
+        
+        # View 2: add noise + volume
+        view2 = waveform + torch.randn_like(waveform, device=waveform.device) * 0.005
+        view2 = view2 * random.uniform(0.8, 1.2)
+        
+        return view1, view2
+
+
+def _build_audio_dataset(config: Dict[str, Any]):
+    """Build audio dataset: SpeechCommands (torchaudio) > HuggingFace > synthetic fallback."""
+    sample_rate = config.get('model', {}).get('audio', {}).get('sample_rate', 16000)
+    max_len = config['training']['audio'].get('max_audio_length', 48000)
+    
+    # 1. Try torchaudio SpeechCommands (no FFmpeg, fast)
+    try:
+        import torchaudio
+        print("Loading SpeechCommands (torchaudio)...")
+        speech_commands = torchaudio.datasets.SPEECHCOMMANDS(
+            root="./data/speech_commands",
+            url="speech_commands_v0.02",
+            download=True,
+            subset=None,
+        )
+        
+        class SpeechCommandsWrapper:
+            def __init__(self, ds, target_len, target_sr):
+                self.ds = ds
+                self.target_len = target_len
+                self.target_sr = target_sr
+            
+            def __len__(self):
+                return len(self.ds)
+            
+            def __getitem__(self, idx):
+                waveform, sr, *_ = self.ds[idx]
+                if sr != self.target_sr:
+                    import torchaudio.transforms as T
+                    resampler = T.Resample(sr, self.target_sr)
+                    waveform = resampler(waveform)
+                if waveform.shape[0] > 1:
+                    waveform = waveform.mean(dim=0)
+                if waveform.shape[-1] > self.target_len:
+                    start = random.randint(0, waveform.shape[-1] - self.target_len)
+                    waveform = waveform[start:start + self.target_len]
+                elif waveform.shape[-1] < self.target_len:
+                    waveform = F.pad(waveform, (0, self.target_len - waveform.shape[-1]))
+                return waveform.squeeze(0)
+        
+        dataset = SpeechCommandsWrapper(speech_commands, max_len, sample_rate)
+        print(f"  Loaded {len(dataset)} audio samples (SpeechCommands)")
+        return dataset, sample_rate, max_len
+    except Exception as e:
+        print(f"SpeechCommands failed: {e}")
+    
+    # 2. Try HuggingFace speech_commands
+    try:
+        from datasets import load_dataset
+        print("Loading speech_commands (HuggingFace)...")
+        ds = load_dataset(
+            "speech_commands",
+            "v0.02",
+            split="train",
+            cache_dir=config.get('data', {}).get('cache_dir', './data/huggingface_cache'),
+        )
+        
+        class HFAudioWrapper:
+            def __init__(self, ds, target_len, target_sr):
+                self.ds = ds
+                self.target_len = target_len
+                self.target_sr = target_sr
+            
+            def __len__(self):
+                return len(self.ds)
+            
+            def __getitem__(self, idx):
+                item = self.ds[idx]
+                waveform = torch.tensor(item['audio']['array'], dtype=torch.float32)
+                sr = item['audio']['sampling_rate']
+                if sr != self.target_sr:
+                    waveform = F.interpolate(
+                        waveform.unsqueeze(0).unsqueeze(0),
+                        size=int(waveform.shape[-1] * self.target_sr / sr),
+                        mode='linear',
+                    ).squeeze()
+                if waveform.shape[-1] > self.target_len:
+                    start = random.randint(0, waveform.shape[-1] - self.target_len)
+                    waveform = waveform[start:start + self.target_len]
+                elif waveform.shape[-1] < self.target_len:
+                    waveform = F.pad(waveform, (0, self.target_len - waveform.shape[-1]))
+                return waveform
+        
+        dataset = HFAudioWrapper(ds, max_len, sample_rate)
+        print(f"  Loaded {len(dataset)} audio samples (HuggingFace)")
+        return dataset, sample_rate, max_len
+    except Exception as e:
+        print(f"HuggingFace speech_commands failed: {e}")
+    
+    # 3. Synthetic fallback
+    print("Using synthetic audio fallback (random waveforms)")
+    
+    class SyntheticAudioDataset:
+        def __init__(self, n=2000, sr=16000, length=48000):
+            self.n = n
+            self.sr = sr
+            self.length = length
+        
+        def __len__(self):
+            return self.n
+        
+        def __getitem__(self, idx):
+            return torch.randn(self.length) * 0.1
+    
+    return SyntheticAudioDataset(2000, sample_rate, max_len), sample_rate, max_len
+
+
 def train_audio_encoder(
     model: UnifiedWorldModel,
     config: Dict[str, Any],
@@ -379,7 +530,8 @@ def train_audio_encoder(
     wandb_logger: Optional[Any] = None,
 ) -> None:
     """
-    Phase 2: Train audio encoder with contrastive learning.
+    Phase 2: Train audio encoder with contrastive learning (NT-Xent).
+    Uses SpeechCommands when available, synthetic otherwise.
     """
     print("=" * 60)
     print("PHASE 2: Training Audio Encoder")
@@ -388,71 +540,90 @@ def train_audio_encoder(
     train_config = config['training']['audio']
     data_config = config['data']
     
-    # For now, use dummy data for the structure
-    print("Note: Using synthetic audio data for structure verification")
-    print("Replace with real audio dataset for actual training")
-    
-    # Dummy audio dataset
-    class DummyAudioDataset:
-        def __init__(self, length=1000, sample_rate=16000, duration=5):
-            self.length = length
-            self.num_samples = sample_rate * duration
-        
-        def __len__(self):
-            return self.length
-        
-        def __getitem__(self, idx):
-            # Random waveform
-            waveform = torch.randn(self.num_samples) * 0.1
-            return waveform
-    
-    dataset = DummyAudioDataset()
+    # Build real audio dataset
+    dataset, sample_rate, max_len = _build_audio_dataset(config)
+    augment = AudioAugment(sample_rate, max_len)
     
     def collate_fn(batch):
-        return torch.stack(batch)
+        view1_list, view2_list = [], []
+        for wav in batch:
+            v1, v2 = augment(wav if isinstance(wav, torch.Tensor) else torch.tensor(wav, dtype=torch.float32))
+            view1_list.append(v1)
+            view2_list.append(v2)
+        return torch.stack(view1_list), torch.stack(view2_list)
     
     loader = DataLoader(
         dataset,
         batch_size=train_config['batch_size'],
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=4,
+        num_workers=config['training']['general']['num_workers'],
+        pin_memory=config['training']['general'].get('pin_memory', False),
+        drop_last=True,
     )
     
     optimizer = torch.optim.AdamW(
         model.audio_encoder.parameters(),
         lr=train_config['learning_rate'],
         weight_decay=train_config['weight_decay'],
+        betas=tuple(config.get('optimizer', {}).get('betas', [0.9, 0.999])),
     )
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=train_config['epochs'],
+        eta_min=config.get('scheduler', {}).get('min_lr', 1e-6),
     )
+    
+    # Mixed precision (PyTorch 2.x)
+    use_amp = config['training']['general'].get('mixed_precision', False)
+    scaler = torch.amp.GradScaler('cuda') if (use_amp and device.type == 'cuda') else None
     
     model.audio_encoder.train()
     
-    for epoch in range(min(train_config['epochs'], 5)):  # Limited for demo
+    for epoch in range(train_config['epochs']):
         epoch_loss = 0
+        num_batches = 0
         
-        for batch_idx, waveforms in enumerate(loader):
-            waveforms = waveforms.to(device)
+        for batch_idx, (view1, view2) in enumerate(loader):
+            view1, view2 = view1.to(device), view2.to(device)
             
-            # Encode
-            features = model.audio_encoder(waveforms)
+            with torch.amp.autocast('cuda', enabled=scaler is not None):
+                z1 = model.audio_encoder(view1)
+                z2 = model.audio_encoder(view2)
+                if z1.dim() > 2:
+                    z1 = z1.mean(dim=(2, 3)) if z1.dim() == 4 else z1.mean(dim=-1)
+                if z2.dim() > 2:
+                    z2 = z2.mean(dim=(2, 3)) if z2.dim() == 4 else z2.mean(dim=-1)
+                loss = nt_xent_loss(z1, z2, train_config.get('temperature', 0.5))
             
-            # Self-supervised loss (simplified)
-            features_norm = F.normalize(features, dim=1)
-            loss = 1 - (features_norm * features_norm).sum(dim=1).mean()
+            if not torch.isfinite(loss):
+                continue
             
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if scaler:
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.audio_encoder.parameters(), config['training']['general']['gradient_clip'])
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.audio_encoder.parameters(), config['training']['general']['gradient_clip'])
+                optimizer.step()
             
             epoch_loss += loss.item()
+            num_batches += 1
         
         scheduler.step()
-        print(f"Epoch {epoch + 1} | Loss: {epoch_loss / len(loader):.4f}")
+        avg_loss = epoch_loss / max(num_batches, 1)
+        print(f"Epoch {epoch + 1}/{train_config['epochs']} | Loss: {avg_loss:.4f}")
+        
+        if (epoch + 1) % config['training']['general']['save_every_n_epochs'] == 0:
+            ckpt_path = Path(data_config['checkpoint_dir']) / f"audio_encoder_epoch{epoch + 1}.pth"
+            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(model.audio_encoder.state_dict(), ckpt_path)
+            print(f"  Saved: {ckpt_path}")
 
 
 def train_fusion_and_temporal(
@@ -472,39 +643,119 @@ def train_fusion_and_temporal(
     
     train_config = config['training']['fusion']
     epochs = train_config.get('epochs', 50)
-    # Use smaller batch size to avoid OOM with 88M parameter model
-    batch_size = min(train_config.get('batch_size', 16), 4)  # Max 4 for large model
+    # Batch size from config, capped for GPU memory (8 for RTX 3050, 4 for smaller)
+    batch_size = min(train_config.get('batch_size', 8), 8)
     lr = train_config.get('learning_rate', 1e-4)
     print(f"Using batch_size={batch_size} to fit in GPU memory")
     
-    # Try to load real data from Greatest Hits
+    # Try to load real data: 1) Greatest Hits, 2) CIFAR+SpeechCommands fallback
     use_real_data = False
+    
     if data_dir and Path(data_dir).exists():
         try:
-            # Import the dataset from train_multimodal
-            import sys
             sys.path.insert(0, str(Path(__file__).parent))
             from train_multimodal import GreatestHitsDataset
             
-            print(f"Loading REAL data from: {data_dir}")
+            print(f"Loading Greatest Hits from: {data_dir}")
             train_dataset = GreatestHitsDataset(data_dir, split='train', augment=True)
             val_dataset = GreatestHitsDataset(data_dir, split='val', augment=False)
             
             train_loader = DataLoader(
-                train_dataset, batch_size=batch_size, shuffle=True, 
-                num_workers=4, pin_memory=True
+                train_dataset, batch_size=batch_size, shuffle=True,
+                num_workers=config['training']['general']['num_workers'],
+                pin_memory=config['training']['general'].get('pin_memory', True),
             )
             val_loader = DataLoader(
-                val_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+                val_dataset, batch_size=batch_size, shuffle=False,
+                num_workers=config['training']['general']['num_workers'],
             )
-            print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+            print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
             use_real_data = True
         except Exception as e:
-            print(f"Failed to load real data: {e}")
-            print("Falling back to synthetic data...")
+            print(f"Greatest Hits failed: {e}")
     
     if not use_real_data:
-        print("WARNING: Using synthetic data - provide --data-dir for real training!")
+        try:
+            from torch.utils.data import Dataset as TorchDataset
+            
+            class CifarSpeechDataset(TorchDataset):
+                """Paired CIFAR (as video) + SpeechCommands (as audio)."""
+                
+                def __init__(self, split, n_frames=8, sz=224, audio_len=16000, cache_dir='./data/huggingface_cache'):
+                    from datasets import load_dataset
+                    self.n_frames, self.sz, self.audio_len = n_frames, sz, audio_len
+                    self.img_ds = load_dataset('cifar100', split=split, cache_dir=cache_dir)
+                    try:
+                        import torchaudio
+                        self.audio_ds = torchaudio.datasets.SPEECHCOMMANDS(
+                            root='./data/speech_commands', url='speech_commands_v0.02',
+                            download=True, subset=None)
+                        self._use_ta = True
+                    except Exception:
+                        self.audio_ds = load_dataset('speech_commands', 'v0.02', split=split,
+                                                     cache_dir=cache_dir)
+                        self._use_ta = False
+                    self.len = min(len(self.img_ds), len(self.audio_ds))
+                
+                def __len__(self):
+                    return self.len
+                
+                def __getitem__(self, idx):
+                    import numpy as np
+                    img = self.img_ds[idx]['img']
+                    if hasattr(img, 'convert'):
+                        img = np.array(img.convert('RGB'))
+                    else:
+                        img = np.array(img)
+                    if img.shape[0] in (1, 3):
+                        img = np.transpose(img, (1, 2, 0))
+                    img = torch.from_numpy(img).float() / 255.0
+                    img = img.permute(2, 0, 1)
+                    img = F.interpolate(img.unsqueeze(0), size=(self.sz, self.sz),
+                                       mode='bilinear', align_corners=False).squeeze(0)
+                    video = img.unsqueeze(0).expand(self.n_frames, -1, -1, -1)
+                    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+                    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+                    video = ((video.permute(0, 2, 3, 1).unsqueeze(0) - mean) / std).squeeze(0).permute(0, 3, 1, 2)
+                    
+                    if self._use_ta:
+                        wav, sr, *_ = self.audio_ds[idx]
+                        if sr != 16000:
+                            wav = F.interpolate(wav.unsqueeze(0).unsqueeze(0),
+                                                size=int(wav.shape[-1] * 16000 / sr),
+                                                mode='linear').squeeze()
+                        if wav.dim() > 1:
+                            wav = wav.mean(dim=0)
+                    else:
+                        wav = torch.tensor(self.audio_ds[idx]['audio']['array'], dtype=torch.float32)
+                    
+                    if wav.shape[-1] > self.audio_len:
+                        wav = wav[..., :self.audio_len]
+                    elif wav.shape[-1] < self.audio_len:
+                        wav = F.pad(wav, (0, self.audio_len - wav.shape[-1]))
+                    
+                    return {'video': video, 'audio': wav.squeeze(0)}
+            
+            cache = config.get('data', {}).get('cache_dir', './data/huggingface_cache')
+            train_dataset = CifarSpeechDataset('train', cache_dir=cache)
+            val_dataset = CifarSpeechDataset('test', cache_dir=cache)
+            
+            train_loader = DataLoader(
+                train_dataset, batch_size=batch_size, shuffle=True,
+                num_workers=config['training']['general']['num_workers'],
+                pin_memory=config['training']['general'].get('pin_memory', True),
+            )
+            val_loader = DataLoader(
+                val_dataset, batch_size=batch_size, shuffle=False,
+                num_workers=config['training']['general']['num_workers'],
+            )
+            print(f"Using CIFAR+SpeechCommands fallback: {len(train_dataset)} train, {len(val_dataset)} val")
+            use_real_data = True
+        except Exception as e:
+            print(f"CIFAR+Speech fallback failed: {e}")
+    
+    if not use_real_data:
+        print("WARNING: Using synthetic data. Provide --data-dir for Greatest Hits or run: python scripts/download_data.py --local-test")
     
     # Train all parameters (not just fusion) for end-to-end training
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)

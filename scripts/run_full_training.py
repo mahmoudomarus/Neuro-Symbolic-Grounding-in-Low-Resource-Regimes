@@ -139,27 +139,23 @@ def phase_1_babbling(config_path: str, steps: int = 100000) -> bool:
 def phase_2_vision(config_path: str, resume: Optional[str] = None) -> bool:
     """Train vision encoder."""
     print("\n" + "="*70)
-    print("PHASE 2: VISION ENCODER (~$50, 12 hours)")
+    print("PHASE 2: VISION ENCODER")
     print("="*70)
-    
-    cmd = ["python", "scripts/train_world_model.py",
-           "--config", config_path,
-           "--phase", "vision"]
-    
+    cmd = ["python", "scripts/train_world_model.py", "--config", config_path, "--phase", "vision"]
     if resume:
         cmd.extend(["--resume", resume])
-    
     return run_command(cmd, "Vision Encoder Training")
 
 
-def phase_3_audio(config_path: str) -> bool:
-    """Train audio encoder (optional, deferred to v2.1)."""
+def phase_3_audio(config_path: str, resume: Optional[str] = None) -> bool:
+    """Train audio encoder (real SpeechCommands pipeline)."""
     print("\n" + "="*70)
-    print("PHASE 3: AUDIO ENCODER (DEFERRED)")
+    print("PHASE 3: AUDIO ENCODER")
     print("="*70)
-    print("Skipping audio encoder - not required for core validation.")
-    print("Enable with --include-audio flag when ready.")
-    return True
+    cmd = ["python", "scripts/train_world_model.py", "--config", config_path, "--phase", "audio"]
+    if resume:
+        cmd.extend(["--resume", resume])
+    return run_command(cmd, "Audio Encoder Training")
 
 
 def phase_4_fusion(config_path: str, resume: Optional[str] = None, data_dir: Optional[str] = None) -> bool:
@@ -219,7 +215,7 @@ def phase_6_evaluation(checkpoint: str, n_seeds: int = 20) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="NSCA Full Training Orchestrator")
     parser.add_argument('--config', type=str, default='configs/training_config.yaml',
-                       help='Path to training config')
+                       help='Path to training config (use training_config_local.yaml for RTX 3050)')
     parser.add_argument('--skip-validation', action='store_true',
                        help='Skip validation checkpoints (dangerous!)')
     parser.add_argument('--resume', type=str, default=None,
@@ -232,8 +228,8 @@ def main():
                        help='Number of seeds for ablation study')
     parser.add_argument('--babbling-steps', type=int, default=100000,
                        help='Total babbling interaction steps')
-    parser.add_argument('--data-dir', type=str, default='/workspace/vis-data',
-                       help='Path to real training data (Greatest Hits)')
+    parser.add_argument('--data-dir', type=str, default='',
+                       help='Path to Greatest Hits data (optional; uses CIFAR+Speech fallback if empty)')
     args = parser.parse_args()
     
     # Banner
@@ -244,10 +240,10 @@ def main():
     print(f"Config: {args.config}")
     print(f"Start phase: {args.start_phase}")
     print(f"Data directory: {args.data_dir}")
-    if Path(args.data_dir).exists():
-        print("✓ REAL DATA WILL BE USED!")
+    if args.data_dir and Path(args.data_dir).exists():
+        print("✓ Greatest Hits data will be used for fusion/temporal")
     else:
-        print("⚠ WARNING: Data directory not found, synthetic data will be used!")
+        print("ℹ Using CIFAR + SpeechCommands fallback (run download_data.py --local-test first)")
     
     # Check GPU
     check_gpu()
@@ -274,29 +270,17 @@ def main():
         phase_1_babbling(args.config, args.babbling_steps)
         phase_times['babbling'] = time.time() - t0
     
-    # Phase 2: Vision
-    if args.start_phase <= 2:
-        t0 = time.time()
-        phase_2_vision(args.config, args.resume)
-        phase_times['vision'] = time.time() - t0
-    
-    # Phase 3: Audio (optional)
-    if args.start_phase <= 3 and args.include_audio:
-        t0 = time.time()
-        phase_3_audio(args.config)
-        phase_times['audio'] = time.time() - t0
-    
-    # Phase 4: Fusion (with real data!)
-    if args.start_phase <= 4:
-        t0 = time.time()
-        phase_4_fusion(args.config, data_dir=args.data_dir)
-        phase_times['fusion'] = time.time() - t0
-    
-    # Phase 5: Temporal (with real data!)
+    # Phases 2-5: Run train_world_model with --phase all so model state is preserved
+    # (vision -> audio -> fusion/temporal in one process)
     if args.start_phase <= 5:
         t0 = time.time()
-        phase_5_temporal(args.config, data_dir=args.data_dir)
-        phase_times['temporal'] = time.time() - t0
+        cmd = ["python", "scripts/train_world_model.py", "--config", args.config, "--phase", "all"]
+        if args.data_dir:
+            cmd.extend(["--data-dir", args.data_dir])
+        if args.resume:
+            cmd.extend(["--resume", args.resume])
+        run_command(cmd, "Vision + Audio + Fusion + Temporal Training")
+        phase_times['training'] = time.time() - t0
     
     # Phase 6: Evaluation
     if args.start_phase <= 6:

@@ -156,7 +156,7 @@ def test_causal_reasoning():
     
     # Intuitive physics
     physics = IntuitivePhysics(64)
-    is_supported, motion = physics.gravity(state_before)
+    is_supported, motion, *_ = physics.gravity(state_before)
     print(f"  ✓ Gravity prediction: supported={is_supported[0].item()}")
     
     # Counterfactual

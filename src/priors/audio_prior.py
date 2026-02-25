@@ -179,10 +179,10 @@ class AuditoryPrior(nn.Module):
         # mel_basis: [n_mels, n_freqs]
         # power_spec: [B, n_freqs, T']
         mel_spec = torch.matmul(self.mel_basis, power_spec)  # [B, n_mels, T']
+        mel_spec = mel_spec.clamp(min=1e-9)  # Prevent log(0) = -inf under mixed precision
         
         # Log compression (Weber-Fechner law)
-        # Add small epsilon for numerical stability
-        log_mel = torch.log(mel_spec + 1e-9)
+        log_mel = torch.log(mel_spec)
         
         return log_mel
     

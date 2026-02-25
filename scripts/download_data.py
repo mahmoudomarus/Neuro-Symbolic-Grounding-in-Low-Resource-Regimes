@@ -183,35 +183,31 @@ def download_kinetics(subset: float = 0.1, cache_dir: Optional[Path] = None):
 
 def download_greatest_hits(cache_dir: Optional[Path] = None):
     """
-    Download Greatest Hits dataset for impact sounds.
-    
-    46K audio clips of objects being struck.
-    Essential for learning hardness from sound.
+    Download audio data for training.
+    Prefers torchaudio SpeechCommands (no HuggingFace scripts).
+    Greatest Hits requires manual download from Cornell.
     """
     print("\n" + "="*60)
-    print("DOWNLOADING: Greatest Hits (Impact Sounds)")
+    print("DOWNLOADING: Speech Commands (audio)")
     print("="*60)
     
-    if cache_dir is None:
-        cache_dir = get_cache_dir()
-    
-    print("Note: Greatest Hits is hosted at Cornell, not HuggingFace.")
-    print("For now, using Speech Commands as audio substitute...")
-    
+    # Use torchaudio SpeechCommands - works without HuggingFace script deprecation
     try:
-        dataset = load_dataset(
-            "speech_commands",
-            "v0.02",
-            split="train[:10%]",
-            cache_dir=str(cache_dir),
+        import torchaudio
+        root = Path("./data/speech_commands")
+        root.mkdir(parents=True, exist_ok=True)
+        dataset = torchaudio.datasets.SPEECHCOMMANDS(
+            root=str(root),
+            url="speech_commands_v0.02",
+            download=True,
+            subset=None,
         )
-        
-        print(f"\n✓ Downloaded {len(dataset)} audio samples")
-        print("  (Speech Commands as substitute for impact sounds)")
+        n = len(dataset)
+        print(f"\n✓ Downloaded Speech Commands: {n} samples")
         return dataset
-        
     except Exception as e:
-        print(f"❌ Failed to download audio: {e}")
+        print(f"❌ Speech Commands failed: {e}")
+        print("  Install torchaudio: pip install torchaudio")
         return None
 
 
@@ -292,9 +288,10 @@ def main():
         return
     
     if args.local_test:
-        print("\n⚠️  LOCAL TEST MODE: Downloading tiny CIFAR subset only")
-        print("   For full training, run this on your cloud instance!\n")
+        print("\n⚠️  LOCAL/RTX 3050 MODE: Downloading CIFAR-100 + SpeechCommands")
+        print("   These datasets support full training on 6GB VRAM.\n")
         download_cifar_for_testing(cache_dir)
+        download_greatest_hits(cache_dir)  # Downloads SpeechCommands as substitute
         verify_downloads(cache_dir)
         return
     
